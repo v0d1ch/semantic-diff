@@ -362,6 +362,41 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
+
+                    Command::SpawnFullContextDiff { request_id, git_diff_args } => {
+                        let tx2 = tx.clone();
+                    
+                        tokio::spawn(async move {
+                            let output = tokio::process::Command::new("git")
+                                .args(&git_diff_args)
+                                .output()
+                                .await;
+                    
+                            let result = match output {
+                                Ok(output) if output.status.success() => {
+                                    let raw = String::from_utf8_lossy(&output.stdout);
+                    
+                                    let untracked =
+                                        crate::diff::untracked::discover_untracked_files_async()
+                                            .await;
+                    
+                                    let (data, _) =
+                                        crate::diff::parse_with_untracked_paths(&raw, &untracked);
+                    
+                                    Ok(data)
+                                }
+                                Ok(output) => Err(
+                                    String::from_utf8_lossy(&output.stderr)
+                                        .trim()
+                                        .to_owned(),
+                                ),
+                                Err(error) => Err(error.to_string()),
+                            };
+                    
+                            let _ = tx2.send(Message::FullContextLoaded{request_id, result}).await;
+                        });
+                    }
+
                     Command::Quit => break,
                 }
             }

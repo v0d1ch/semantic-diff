@@ -410,7 +410,7 @@ fn get_current_md_path(app: &App) -> Option<String> {
         crate::app::VisibleItem::HunkHeader { file_idx, .. } => *file_idx,
         crate::app::VisibleItem::DiffLine { file_idx, .. } => *file_idx,
     };
-    let file = app.diff_data.files.get(file_idx)?;
+    let file = app.displayed_diff().files.get(file_idx)?;
     let path = file.target_file.trim_start_matches("b/");
     if path.ends_with(".md") || path.ends_with(".markdown") || path.ends_with(".mdown") {
         Some(path.to_string())

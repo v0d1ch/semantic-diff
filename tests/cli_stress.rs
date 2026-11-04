@@ -17,7 +17,7 @@ fn setup_repo() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let repo = tmp.path();
 
-    run_git(repo, &["init"]);
+    run_git(repo, &["init", "--initial-branch=main"]);
     run_git(repo, &["config", "user.email", "test@test.com"]);
     run_git(repo, &["config", "user.name", "Test"]);
 
@@ -45,7 +45,7 @@ fn setup_repo_with_branches() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let repo = tmp.path();
 
-    run_git(repo, &["init"]);
+    run_git(repo, &["init", "--initial-branch=main"]);
     run_git(repo, &["config", "user.email", "test@test.com"]);
     run_git(repo, &["config", "user.name", "Test"]);
 
@@ -61,7 +61,7 @@ fn setup_repo_with_branches() -> tempfile::TempDir {
     run_git(repo, &["commit", "-m", "feature commit"]);
 
     // Go back to main and make a diverging change
-    run_git(repo, &["checkout", "master"]).or_else(|| run_git_opt(repo, &["checkout", "main"]));
+    run_git(repo, &["checkout", "main"]);
 
     std::fs::write(repo.join("main_only.txt"), "main work\n").unwrap();
     run_git(repo, &["add", "."]);
@@ -70,32 +70,45 @@ fn setup_repo_with_branches() -> tempfile::TempDir {
     tmp
 }
 
-/// Run a git command, panicking on failure.
-fn run_git(dir: &std::path::Path, args: &[&str]) -> Option<()> {
-    let output = Command::new("git")
-        .args(args)
+/// Fixture repositories must not inherit signing, hooks, or diff tools from
+/// the developer's global Git configuration.
+fn git_command(dir: &std::path::Path) -> Command {
+    let mut command = Command::new("git");
+    command
         .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    command
+}
+
+/// Run a git command, panicking at setup time if the fixture cannot be built.
+fn run_git(dir: &std::path::Path, args: &[&str]) {
+    let output = git_command(dir)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .expect("git command failed to execute");
-    if output.status.success() {
-        Some(())
-    } else {
-        None
-    }
-}
-
-/// Run a git command, returning None instead of panicking on failure.
-fn run_git_opt(dir: &std::path::Path, args: &[&str]) -> Option<()> {
-    run_git(dir, args)
+    assert!(
+        output.status.success(),
+        "git {args:?} failed while preparing the fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Run semantic-diff with given args in a given directory, returning (exit_code, stdout, stderr).
 fn run_semantic_diff(dir: &std::path::Path, args: &[&str]) -> (i32, String, String) {
+    let runtime = tempfile::tempdir().unwrap();
+    // The binary needs Git, but these CLI tests must not invoke installed AI
+    // providers. Use only the resolved Git executable's directory on PATH.
+    let git = which::which("git").unwrap().canonicalize().unwrap();
     let output = Command::new(bin())
         .args(args)
         .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("XDG_RUNTIME_DIR", runtime.path())
+        .env("PATH", git.parent().unwrap())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -522,9 +535,8 @@ fn assert_no_unexpected_panic(stderr: &str, context: &str) {
 
 /// Detect the default branch name (main or master).
 fn detect_default_branch(repo: &std::path::Path) -> String {
-    let output = Command::new("git")
+    let output = git_command(repo)
         .args(["branch", "--list", "main"])
-        .current_dir(repo)
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -537,10 +549,14 @@ fn detect_default_branch(repo: &std::path::Path) -> String {
 
 /// Get trimmed stdout from a git command.
 fn git_output(repo: &std::path::Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = git_command(repo)
         .args(args)
-        .current_dir(repo)
         .output()
         .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }

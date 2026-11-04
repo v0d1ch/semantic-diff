@@ -5,7 +5,7 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] Add a nix flake for easy building/running
 - [x] Hide/show side menu
 - [x] Directly compare the branch to current default branch if no flag
-- [ ] Github like buttons to reveal file contents before/after the altered lines
+- [x] View full file shortcut
 - [ ] Browse the local file in system editor
 - [ ] Post comment using gh tool directly from the cli
 

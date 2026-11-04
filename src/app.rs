@@ -52,6 +52,7 @@ pub enum Message {
     /// A mermaid diagram finished rendering — triggers UI refresh.
     MermaidReady,
     ReviewSectionReady(u64, ReviewSection, Result<String, String>),
+    FullContextLoaded {request_id: u64, result: Result<DiffData, String>},
 }
 
 
@@ -85,6 +86,11 @@ pub enum Command {
     },
     SpawnReviewBatch(Vec<Command>),
     CancelReview(u64),
+    SpawnFullContextDiff {
+      git_diff_args: Vec<String>,
+      request_id: u64,
+
+    },
     Quit,
 }
 
@@ -106,6 +112,7 @@ pub struct UiState {
     pub diff_view_width: Cell<u16>,
     /// Scroll offset for preview mode (line-based, not item-based).
     pub preview_scroll: usize,
+    pub full_file_context: bool,
 }
 
 /// An item in the flattened visible list.
@@ -119,6 +126,9 @@ pub enum VisibleItem {
 /// The main application state (TEA Model).
 pub struct App {
     pub diff_data: DiffData,
+    pub full_context_diff: Option<DiffData>,
+    pub full_context_loading: bool,
+    pub full_context_request_id: u64,
     pub ui_state: UiState,
     pub highlight_cache: HighlightCache,
     #[allow(dead_code)]
@@ -184,6 +194,9 @@ impl App {
         };
         Self {
             diff_data,
+            full_context_diff: None,
+            full_context_loading: false,
+            full_context_request_id: 0,
             ui_state: UiState {
                 selected_index: 0,
                 scroll_offset: 0,
@@ -191,6 +204,7 @@ impl App {
                 viewport_height: 24, // will be updated on first draw
                 diff_view_width: Cell::new(80),
                 preview_scroll: 0,
+                full_file_context: false,
             },
             highlight_cache,
             should_quit: false,
@@ -450,11 +464,46 @@ impl App {
                 }
                 None
             }
+
+            Message::FullContextLoaded {request_id, result} => {
+                if request_id != self.full_context_request_id {
+                       return None;
+                }
+                self.full_context_loading = false;
+            
+                match result {
+                    Ok(data) => {
+                        tracing::debug!(
+                            files = data.files.len(),
+                            "Full-file context loaded"
+                        );
+            
+                        self.full_context_diff = Some(data);
+                        
+                        if self.ui_state.full_file_context {
+                            self.reset_diff_navigation();
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "Could not load full-file context");
+                        self.full_context_diff = None;
+                        self.ui_state.full_file_context = false;
+                        self.reset_diff_navigation();
+                    }
+                }
+            
+                None
+            }
         }
     }
 
     /// Apply new diff data while preserving scroll position and collapse state.
     fn apply_new_diff_data(&mut self, new_data: DiffData) {
+        if self.full_context_active() {
+            self.reset_diff_navigation();
+        }
+        self.invalidate_full_context();
+
         // 1. Record collapsed state by file path (not index)
         let mut collapsed_files: HashSet<String> = HashSet::new();
         let mut collapsed_hunks: HashSet<(String, usize)> = HashSet::new();
@@ -532,7 +581,7 @@ impl App {
             VisibleItem::HunkHeader { file_idx, .. } => *file_idx,
             VisibleItem::DiffLine { file_idx, .. } => *file_idx,
         };
-        self.diff_data.files.get(fi).map(|f| f.target_file.clone())
+        self.displayed_diff().files.get(fi).map(|f| f.target_file.clone())
     }
 
     /// Handle a key press event, branching on input mode.
@@ -775,6 +824,19 @@ impl App {
         }
     }
 
+    fn full_context_git_args(&self) -> Vec<String> {
+        let mut args = self.git_diff_args.clone();
+    
+        let insert_at = args
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap_or(args.len());
+    
+        args.insert(insert_at, String::from("--unified=999999"));
+    
+        args
+    }
+
     /// Handle keys when the diff view is focused (original behavior).
     fn handle_key_diff(&mut self, key: KeyEvent) -> Option<Command> {
         // Review pane scroll and controls take priority when a review is active
@@ -839,6 +901,25 @@ impl App {
                 None
             }
 
+            KeyCode::Char('f') => {
+                let enable = !self.ui_state.full_file_context;
+            
+                self.invalidate_full_context();
+                self.reset_diff_navigation();
+            
+                if enable {
+                    self.ui_state.full_file_context = true;
+                    self.full_context_loading = true;
+            
+                    Some(Command::SpawnFullContextDiff {
+                        request_id: self.full_context_request_id,
+                        git_diff_args: self.full_context_git_args(),
+                    })
+                } else {
+                    None
+                }
+            }
+
             _ => None,
         }
     }
@@ -853,7 +934,7 @@ impl App {
         let items = self.visible_items();
         let target_idx = items.iter().position(|item| {
             if let VisibleItem::FileHeader { file_idx } = item {
-                self.diff_data.files[*file_idx]
+                self.displayed_diff().files[*file_idx]
                     .target_file
                     .trim_start_matches("b/")
                     == path
@@ -1069,7 +1150,7 @@ impl App {
                 (start + len - offset) % len
             };
             if let VisibleItem::FileHeader { file_idx } = &items[idx] {
-                let path = &self.diff_data.files[*file_idx].target_file;
+                let path = &self.displayed_diff().files[*file_idx].target_file;
                 if path.to_lowercase().contains(&pattern) {
                     self.ui_state.selected_index = idx;
                     self.adjust_scroll();
@@ -1124,7 +1205,7 @@ impl App {
     fn item_char_width(&self, item: &VisibleItem) -> usize {
         match item {
             VisibleItem::FileHeader { file_idx } => {
-                let file = &self.diff_data.files[*file_idx];
+                let file = &self.displayed_diff().files[*file_idx];
                 let name = if file.is_rename {
                     format!(
                         "renamed: {} -> {}",
@@ -1141,7 +1222,7 @@ impl App {
                     + format!(" -{}", file.removed_count).len()
             }
             VisibleItem::HunkHeader { file_idx, hunk_idx } => {
-                let hunk = &self.diff_data.files[*file_idx].hunks[*hunk_idx];
+                let hunk = &self.displayed_diff().files[*file_idx].hunks[*hunk_idx];
                 // "   v " + header
                 5 + hunk.header.len()
             }
@@ -1151,7 +1232,7 @@ impl App {
                 line_idx,
             } => {
                 let line =
-                    &self.diff_data.files[*file_idx].hunks[*hunk_idx].lines[*line_idx];
+                    &self.displayed_diff().files[*file_idx].hunks[*hunk_idx].lines[*line_idx];
                 // gutter (10) + prefix (2) + content
                 12 + line.content.len()
             }
@@ -1230,7 +1311,7 @@ impl App {
             .map(|f| f.to_lowercase());
 
         let mut items = Vec::new();
-        for (fi, file) in self.diff_data.files.iter().enumerate() {
+        for (fi, file) in self.displayed_diff().files.iter().enumerate() {
             let file_path = file.target_file.trim_start_matches("b/");
 
             // If search filter is active, skip files that don't match
@@ -1254,9 +1335,12 @@ impl App {
                 for (hi, hunk) in file.hunks.iter().enumerate() {
                     // If hunk filter is active and this hunk isn't in the set, skip it
                     // (empty set = show all hunks for this file)
-                    if let Some(hunk_set) = allowed_hunks {
-                        if !hunk_set.is_empty() && !hunk_set.contains(&hi) {
-                            continue;
+                    
+                    if !self.full_context_active() {
+                        if let Some(hunk_set) = allowed_hunks {
+                            if !hunk_set.is_empty() && !hunk_set.contains(&hi) {
+                                continue;
+                            }
                         }
                     }
 
@@ -1399,5 +1483,33 @@ impl App {
     /// Returns pending images that must be flushed after terminal.draw().
     pub fn view(&self, frame: &mut ratatui::Frame) -> Vec<crate::ui::preview_view::PendingImage> {
         crate::ui::draw(self, frame)
+    }
+
+
+    pub fn displayed_diff(&self) -> &DiffData {
+        if self.ui_state.full_file_context {
+            if let Some(data) = &self.full_context_diff {
+                return data;
+            }
+        }
+    
+        &self.diff_data
+    }
+
+    pub fn full_context_active(&self) -> bool {
+        self.ui_state.full_file_context && self.full_context_diff.is_some()
+    }
+    
+    fn reset_diff_navigation(&mut self) {
+        self.ui_state.selected_index = 0;
+        self.ui_state.scroll_offset = 0;
+        self.ui_state.collapsed.clear();
+    }
+
+    fn invalidate_full_context(&mut self) {
+        self.full_context_request_id += 1;
+        self.full_context_diff = None;
+        self.full_context_loading = false;
+        self.ui_state.full_file_context = false;
     }
 }

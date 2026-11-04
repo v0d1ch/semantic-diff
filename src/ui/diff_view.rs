@@ -62,7 +62,7 @@ pub(crate) fn render_item(app: &App, item: &VisibleItem, is_selected: bool) -> L
 /// Render a file header line with collapse indicator, name, and +/- stats.
 /// When an active filter is set, highlights the matching portion of the filename.
 fn render_file_header(app: &App, file_idx: usize, sel_bg: Color) -> Line<'static> {
-    let file = &app.diff_data.files[file_idx];
+    let file = &app.displayed_diff().files[file_idx];
     let is_collapsed = app
         .ui_state
         .collapsed
@@ -176,7 +176,7 @@ fn render_hunk_header(
     hunk_idx: usize,
     sel_bg: Color,
 ) -> Line<'static> {
-    let hunk = &app.diff_data.files[file_idx].hunks[hunk_idx];
+    let hunk = &app.displayed_diff().files[file_idx].hunks[hunk_idx];
     let is_collapsed = app
         .ui_state
         .collapsed
@@ -206,7 +206,7 @@ fn render_diff_line(
     line_idx: usize,
     is_selected: bool,
 ) -> Line<'static> {
-    let hunk = &app.diff_data.files[file_idx].hunks[hunk_idx];
+    let hunk = &app.displayed_diff().files[file_idx].hunks[hunk_idx];
     let line = &hunk.lines[line_idx];
 
     let (prefix, fg, bg) = match line.line_type {
@@ -266,7 +266,7 @@ fn render_diff_line(
                 Style::default().fg(fg).bg(seg_bg).add_modifier(seg_modifier),
             ));
         }
-    } else if let Some(highlighted) = app.highlight_cache.get(file_idx, hunk_idx, line_idx) {
+    } else if let Some(highlighted) = app.highlight_cache.get(file_idx, hunk_idx, line_idx).filter(|_| !app.full_context_active()) {
         // Syntax highlighting mode
         for (style, text) in highlighted {
             spans.push(Span::styled(text.clone(), style.bg(final_bg)));

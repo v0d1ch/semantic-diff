@@ -1,5 +1,6 @@
 use clap::Parser;
 use crate::theme::ThemeMode;
+use std::path::Path;
 
 /// A terminal diff viewer with AI-powered semantic grouping.
 ///
@@ -42,6 +43,12 @@ impl Cli {
 impl Cli {
     /// Build the full argument list for `git diff`, prepending `-M` for rename detection.
     pub fn git_diff_args(&self) -> Vec<String> {
+        self.git_diff_args_in(Path::new("."))
+    }
+
+    // Keep Git lookups scoped to a directory so tests don't change the
+    // process-wide working directory while other tests are running.
+    fn git_diff_args_in(&self, repo: &Path) -> Vec<String> {
         let mut args = vec![
             "diff".to_owned(),
             "-M".to_owned(),
@@ -55,11 +62,11 @@ impl Cli {
             return args;
         }
 
-        let current_branch = git_output(&[
+        let current_branch = git_output(repo, &[
             "symbolic-ref", "--quiet", "--short", "HEAD",
         ]);
 
-        let default_ref = git_output(&[
+        let default_ref = git_output(repo, &[
             "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD",
         ]);
 
@@ -80,9 +87,10 @@ impl Cli {
     }
 }
 
-fn git_output(args: &[&str]) -> Option<String> {
+fn git_output(repo: &Path, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
         .args(args)
+        .current_dir(repo)
         .output()
         .ok()?;
 
@@ -98,10 +106,98 @@ fn git_output(args: &[&str]) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn git(repo: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("run fixture Git command");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn repo_with_default_branch() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        // A nonstandard name proves we discover the default, not assume main.
+        git(repo.path(), &["init", "--initial-branch=trunk"]);
+        git(repo.path(), &[
+            "-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "--allow-empty", "-m", "initial",
+        ]);
+        git(repo.path(), &["update-ref", "refs/remotes/origin/trunk", "HEAD"]);
+        git(repo.path(), &[
+            "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk",
+        ]);
+        repo
+    }
+
     #[test]
-    fn test_no_args_produces_bare_diff() {
+    fn test_no_args_on_default_branch_compares_with_head() {
+        let repo = repo_with_default_branch();
         let cli = Cli { theme: None, git_args: vec![] };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M"]);
+        assert_eq!(
+            cli.git_diff_args_in(repo.path()),
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "HEAD"]
+        );
+    }
+
+    #[test]
+    fn test_no_args_on_feature_branch_uses_default_branch_merge_base() {
+        let repo = repo_with_default_branch();
+        git(repo.path(), &["checkout", "-b", "feature"]);
+        let cli = Cli { theme: None, git_args: vec![] };
+        assert_eq!(
+            cli.git_diff_args_in(repo.path()),
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--merge-base", "refs/remotes/origin/trunk"]
+        );
+    }
+
+    #[test]
+    fn test_no_args_without_default_branch_falls_back_to_unstaged() {
+        let repo = repo_with_default_branch();
+        git(repo.path(), &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+        let cli = Cli { theme: None, git_args: vec![] };
+        assert_eq!(
+            cli.git_diff_args_in(repo.path()),
+            vec!["diff", "-M", "--no-ext-diff", "--no-color"]
+        );
+    }
+
+    #[test]
+    fn test_no_args_on_detached_head_falls_back_to_unstaged() {
+        let repo = repo_with_default_branch();
+        git(repo.path(), &["checkout", "--detach"]);
+        let cli = Cli { theme: None, git_args: vec![] };
+        assert_eq!(
+            cli.git_diff_args_in(repo.path()),
+            vec!["diff", "-M", "--no-ext-diff", "--no-color"]
+        );
+    }
+
+    #[test]
+    fn test_no_args_outside_repository_falls_back_to_bare_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli { theme: None, git_args: vec![] };
+        assert_eq!(
+            cli.git_diff_args_in(dir.path()),
+            vec!["diff", "-M", "--no-ext-diff", "--no-color"]
+        );
+    }
+
+    #[test]
+    fn test_explicit_args_override_feature_branch_default() {
+        let repo = repo_with_default_branch();
+        git(repo.path(), &["checkout", "-b", "feature"]);
+        let cli = Cli { theme: None, git_args: vec!["--staged".to_owned()] };
+        assert_eq!(
+            cli.git_diff_args_in(repo.path()),
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--staged"]
+        );
     }
 
     #[test]
@@ -110,7 +206,7 @@ mod tests {
             theme: None,
             git_args: vec!["HEAD".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "HEAD"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "HEAD"]);
     }
 
     #[test]
@@ -119,7 +215,7 @@ mod tests {
             theme: None,
             git_args: vec!["--staged".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--staged"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "--staged"]);
     }
 
     #[test]
@@ -128,7 +224,7 @@ mod tests {
             theme: None,
             git_args: vec!["main..feature".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "main..feature"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "main..feature"]);
     }
 
     #[test]
@@ -137,7 +233,7 @@ mod tests {
             theme: None,
             git_args: vec!["main...feature".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "main...feature"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "main...feature"]);
     }
 
     #[test]
@@ -148,7 +244,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "main", "feature"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "main", "feature"]
         );
     }
 
@@ -164,7 +260,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "HEAD", "--", "src/"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "HEAD", "--", "src/"]
         );
     }
 
@@ -174,7 +270,7 @@ mod tests {
             theme: None,
             git_args: vec!["--cached".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--cached"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "--cached"]);
     }
 
     // --- Stress / edge-case tests ---
@@ -185,7 +281,7 @@ mod tests {
             theme: None,
             git_args: vec!["HEAD~3".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "HEAD~3"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "HEAD~3"]);
     }
 
     #[test]
@@ -194,7 +290,7 @@ mod tests {
             theme: None,
             git_args: vec!["HEAD^".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "HEAD^"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "HEAD^"]);
     }
 
     #[test]
@@ -208,7 +304,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "abc1234", "def5678"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "abc1234", "def5678"]
         );
     }
 
@@ -219,7 +315,7 @@ mod tests {
             theme: None,
             git_args: vec![sha.clone()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", &sha]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", &sha]);
     }
 
     #[test]
@@ -230,7 +326,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "--staged", "HEAD~1"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--staged", "HEAD~1"]
         );
     }
 
@@ -248,7 +344,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "HEAD", "--", "src/", "tests/", "Cargo.toml"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "HEAD", "--", "src/", "tests/", "Cargo.toml"]
         );
     }
 
@@ -264,7 +360,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "main..feature", "--", "src/"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "main..feature", "--", "src/"]
         );
     }
 
@@ -280,7 +376,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "origin/main...HEAD", "--", "*.rs"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "origin/main...HEAD", "--", "*.rs"]
         );
     }
 
@@ -292,7 +388,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "--merge-base", "main"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--merge-base", "main"]
         );
     }
 
@@ -308,7 +404,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "--no-index", "file_a.txt", "file_b.txt"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--no-index", "file_a.txt", "file_b.txt"]
         );
     }
 
@@ -320,11 +416,13 @@ mod tests {
             git_args: args.clone(),
         };
         let result = cli.git_diff_args();
-        assert_eq!(result.len(), 102); // "diff" + "-M" + 100 paths
+        assert_eq!(result.len(), 104); // Four fixed arguments + 100 paths
         assert_eq!(result[0], "diff");
         assert_eq!(result[1], "-M");
-        assert_eq!(result[2], "path_0.rs");
-        assert_eq!(result[101], "path_99.rs");
+        assert_eq!(result[2], "--no-ext-diff");
+        assert_eq!(result[3], "--no-color");
+        assert_eq!(result[4], "path_0.rs");
+        assert_eq!(result[103], "path_99.rs");
     }
 
     #[test]
@@ -338,7 +436,7 @@ mod tests {
             ],
         };
         let result = cli.git_diff_args();
-        assert_eq!(result[4], "src/日本語/ファイル.rs");
+        assert_eq!(result[6], "src/日本語/ファイル.rs");
     }
 
     #[test]
@@ -351,7 +449,7 @@ mod tests {
             ],
         };
         let result = cli.git_diff_args();
-        assert_eq!(result[3], "path with spaces/file.rs");
+        assert_eq!(result[5], "path with spaces/file.rs");
     }
 
     #[test]
@@ -360,7 +458,7 @@ mod tests {
             theme: None,
             git_args: vec!["@{upstream}".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "@{upstream}"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "@{upstream}"]);
     }
 
     #[test]
@@ -369,7 +467,7 @@ mod tests {
             theme: None,
             git_args: vec!["stash@{0}".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "stash@{0}"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "stash@{0}"]);
     }
 
     #[test]
@@ -383,7 +481,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "origin/main", "origin/feature/my-branch"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "origin/main", "origin/feature/my-branch"]
         );
     }
 
@@ -395,7 +493,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "v1.0.0", "v2.0.0"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "v1.0.0", "v2.0.0"]
         );
     }
 
@@ -407,7 +505,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "--diff-filter=ACMR", "HEAD"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--diff-filter=ACMR", "HEAD"]
         );
     }
 
@@ -419,7 +517,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "--stat", "HEAD"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--stat", "HEAD"]
         );
     }
 
@@ -431,7 +529,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "--name-only"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--name-only"]
         );
     }
 
@@ -449,7 +547,7 @@ mod tests {
         };
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "--staged", "--diff-filter=M", "HEAD~5", "--", "src/"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--staged", "--diff-filter=M", "HEAD~5", "--", "src/"]
         );
     }
 
@@ -460,7 +558,7 @@ mod tests {
             git_args: vec!["".to_string()],
         };
         let result = cli.git_diff_args();
-        assert_eq!(result, vec!["diff", "-M", ""]);
+        assert_eq!(result, vec!["diff", "-M", "--no-ext-diff", "--no-color", ""]);
     }
 
     #[test]
@@ -469,45 +567,49 @@ mod tests {
             theme: None,
             git_args: vec!["--".to_string()],
         };
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "--"]);
     }
 
     #[test]
     fn test_clap_parse_no_args() {
         // Simulate: semantic-diff (no arguments)
+        let repo = repo_with_default_branch();
         let cli = Cli::try_parse_from(["semantic-diff"]).unwrap();
         assert!(cli.git_args.is_empty());
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M"]);
+        assert_eq!(
+            cli.git_diff_args_in(repo.path()),
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "HEAD"]
+        );
     }
 
     #[test]
     fn test_clap_parse_head() {
         let cli = Cli::try_parse_from(["semantic-diff", "HEAD"]).unwrap();
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "HEAD"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "HEAD"]);
     }
 
     #[test]
     fn test_clap_parse_staged() {
         let cli = Cli::try_parse_from(["semantic-diff", "--staged"]).unwrap();
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--staged"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "--staged"]);
     }
 
     #[test]
     fn test_clap_parse_cached() {
         let cli = Cli::try_parse_from(["semantic-diff", "--cached"]).unwrap();
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--cached"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "--cached"]);
     }
 
     #[test]
     fn test_clap_parse_two_dot_range() {
         let cli = Cli::try_parse_from(["semantic-diff", "main..feature"]).unwrap();
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "main..feature"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "main..feature"]);
     }
 
     #[test]
     fn test_clap_parse_three_dot_range() {
         let cli = Cli::try_parse_from(["semantic-diff", "main...feature"]).unwrap();
-        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "main...feature"]);
+        assert_eq!(cli.git_diff_args(), vec!["diff", "-M", "--no-ext-diff", "--no-color", "main...feature"]);
     }
 
     #[test]
@@ -515,7 +617,7 @@ mod tests {
         let cli = Cli::try_parse_from(["semantic-diff", "abc123", "def456"]).unwrap();
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "abc123", "def456"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "abc123", "def456"]
         );
     }
 
@@ -531,7 +633,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "HEAD~3", "--", "src/main.rs", "src/lib.rs"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "HEAD~3", "--", "src/main.rs", "src/lib.rs"]
         );
     }
 
@@ -552,6 +654,8 @@ mod tests {
             vec![
                 "diff",
                 "-M",
+                "--no-ext-diff",
+                "--no-color",
                 "--staged",
                 "--diff-filter=ACMR",
                 "HEAD~5",
@@ -568,7 +672,7 @@ mod tests {
             Cli::try_parse_from(["semantic-diff", "--merge-base", "main"]).unwrap();
         assert_eq!(
             cli.git_diff_args(),
-            vec!["diff", "-M", "--merge-base", "main"]
+            vec!["diff", "-M", "--no-ext-diff", "--no-color", "--merge-base", "main"]
         );
     }
 

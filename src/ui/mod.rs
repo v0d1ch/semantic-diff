@@ -90,6 +90,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
             ("Esc", "Clear filter / quit"),
             ("q", "Quit"),
             ("b", "Show/hide sidebar"),
+            ("f", "Display full file"),
         ]),
         ("Review (on group)", vec![
             ("R", "Force-refresh review"),
