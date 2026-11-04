@@ -169,6 +169,7 @@ pub struct App {
     pub active_review_group: Option<u64>,
     pub review_scroll: usize,
     pub review_source: ReviewSource,
+    pub sidebar_visible: bool,
 }
 
 impl App {
@@ -221,6 +222,7 @@ impl App {
             active_review_group: None,
             review_scroll: 0,
             review_source: crate::review::detect_review_skill(),
+            sidebar_visible: true,
         }
     }
 
@@ -587,10 +589,12 @@ impl App {
                 return None;
             }
             KeyCode::Tab => {
-                self.focused_panel = match self.focused_panel {
-                    FocusedPanel::FileTree => FocusedPanel::DiffView,
-                    FocusedPanel::DiffView => FocusedPanel::FileTree,
-                };
+                if self.sidebar_visible {
+                  self.focused_panel = match self.focused_panel {
+                      FocusedPanel::FileTree => FocusedPanel::DiffView,
+                      FocusedPanel::DiffView => FocusedPanel::FileTree,
+                  };
+                }
                 return None;
             }
             KeyCode::Esc => {
@@ -616,6 +620,15 @@ impl App {
                         self.ui_state.preview_scroll = 0;
                     }
                 }
+                return None;
+            }
+            KeyCode::Char('b') => {
+                self.sidebar_visible = !self.sidebar_visible;
+            
+                if !self.sidebar_visible {
+                    self.focused_panel = FocusedPanel::DiffView;
+                }
+            
                 return None;
             }
             _ => {}

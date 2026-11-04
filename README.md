@@ -3,11 +3,11 @@
 List of features I plan to add to semantic-diff in no particular order
 
 - [x] Add a nix flake for easy building/running
+- [x] Hide/show side menu
 - [ ] Github like buttons to reveal file contents before/after the altered lines
 - [ ] Browse the local file in system editor
 - [ ] Post comment using gh tool directly from the cli
 - [ ] New flag to directly compare the branch to current main branch
-- [ ] Hide/show side menu
 
 
 [![Crates.io](https://img.shields.io/crates/v/semantic-diff)](https://crates.io/crates/semantic-diff)

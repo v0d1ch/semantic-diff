@@ -24,24 +24,31 @@ pub fn draw(app: &App, frame: &mut Frame) -> Vec<preview_view::PendingImage> {
         Layout::vertical([Constraint::Min(1), Constraint::Length(bottom_height)]).split(area);
 
     // Horizontal split: sidebar | diff view
-    let sidebar_width = if area.width < 80 {
-        Constraint::Max(25)
+    let content_area = if app.sidebar_visible {
+        let sidebar_width = if area.width < 80 {
+            Constraint::Max(25)
+        } else {
+            Constraint::Max(40)
+        };
+    
+        let horizontal =
+            Layout::horizontal([sidebar_width, Constraint::Min(40)])
+                .split(vertical[0]);
+    
+        file_tree::render_tree(app, frame, horizontal[0]);
+    
+        horizontal[1]
     } else {
-        Constraint::Max(40)
+        vertical[0]
     };
-    let horizontal =
-        Layout::horizontal([sidebar_width, Constraint::Min(40)]).split(vertical[0]);
-
-    // Render file tree sidebar in left panel
-    file_tree::render_tree(app, frame, horizontal[0]);
 
     // Render diff view, preview, or review+diff in right panel
     if app.active_review_group.is_some() {
-        review_view::render_review_with_diff(app, frame, horizontal[1]);
+        review_view::render_review_with_diff(app, frame, content_area);
     } else if app.preview_mode && preview_view::is_current_file_markdown(app) {
-        pending_images = preview_view::render_preview(app, frame, horizontal[1]);
+        pending_images = preview_view::render_preview(app, frame, content_area);
     } else {
-        diff_view::render_diff(app, frame, horizontal[1]);
+        diff_view::render_diff(app, frame, content_area);
     }
 
     // Render bottom bar
@@ -82,6 +89,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
             (",", "Settings"),
             ("Esc", "Clear filter / quit"),
             ("q", "Quit"),
+            ("b", "Show/hide sidebar"),
         ]),
         ("Review (on group)", vec![
             ("R", "Force-refresh review"),
