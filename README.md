@@ -1,8 +1,15 @@
-# semantic-diff
+# semantic-diff cli fork 
 
-A web-based diff viewer with AI-powered semantic grouping.
+NOTE: I needed some features that would make PR reviews more pleasent. 
 
-![semantic-diff screenshot](sd-final.png)
+List of features I plan to add to semantic-diff in no particular order
+
+- [ ] Add a nix flake for easy building/running
+- [ ] Github like buttons to reveal file contents before/after the altered lines
+- [ ] Browse the local file in system editor
+- [ ] Post comment using gh tool directly from the cli
+- [ ] New flag to directly compare the branch to current main branch
+- [ ] Hide/show side menu
 
 ## What it is
 
