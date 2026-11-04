@@ -8,7 +8,8 @@ use crate::theme::ThemeMode;
 /// to `git diff` directly.
 ///
 /// Examples:
-///   semantic-diff                        # unstaged changes (same as git diff)
+///   semantic-diff                        # unstaged changes (same as git diff) if on a branch it
+///                                        # shows differences to the default branch (main/master)
 ///   semantic-diff HEAD                   # all changes vs HEAD
 ///   semantic-diff --staged               # staged changes only
 ///   semantic-diff main..feature          # two-dot range
@@ -41,10 +42,56 @@ impl Cli {
 impl Cli {
     /// Build the full argument list for `git diff`, prepending `-M` for rename detection.
     pub fn git_diff_args(&self) -> Vec<String> {
-        let mut args = vec!["diff".to_string(), "-M".to_string()];
-        args.extend(self.git_args.iter().cloned());
+        let mut args = vec![
+            "diff".to_owned(),
+            "-M".to_owned(),
+            "--no-ext-diff".to_owned(),
+            "--no-color".to_owned(),
+        ];
+
+        // Explicit arguments take priority.
+        if !self.git_args.is_empty() {
+            args.extend(self.git_args.iter().cloned());
+            return args;
+        }
+
+        let current_branch = git_output(&[
+            "symbolic-ref", "--quiet", "--short", "HEAD",
+        ]);
+
+        let default_ref = git_output(&[
+            "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD",
+        ]);
+
+        if let (Some(current), Some(default)) = (current_branch, default_ref) {
+            let default_name = default.strip_prefix("refs/remotes/origin/");
+
+            if default_name == Some(current.as_str()) {
+                // On the default branch: compare working files with HEAD.
+                args.push("HEAD".to_owned());
+            } else {
+                // On a feature branch: compare from the shared ancestor.
+                args.push("--merge-base".to_owned());
+                args.push(default);
+            }
+        }
+
         args
     }
+}
+
+fn git_output(args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8(output.stdout).ok()?;
+    Some(text.trim().to_owned())
 }
 
 #[cfg(test)]
