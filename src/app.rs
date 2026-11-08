@@ -727,6 +727,10 @@ impl App {
     /// Update the diff view filter based on the currently selected tree node.
     fn apply_tree_selection(&mut self, selected: &[TreeNodeId]) -> Option<Command> {
         match selected.last() {
+            Some(TreeNodeId::Directory(group_idx, path)) => {
+                self.select_tree_directory(path, *group_idx);
+                None
+            }
             Some(TreeNodeId::File(group_idx, path)) => {
                 self.select_tree_file(path, *group_idx);
                 // Clear review pane display, but let in-flight reviews finish
@@ -945,6 +949,29 @@ impl App {
         self.ui_state.selected_index = target_idx.unwrap_or(0);
         // Pin scroll so the file header is at the top of the viewport
         self.ui_state.scroll_offset = self.ui_state.selected_index as u16;
+    }
+
+    /// Filter descendants of a directory, preserving its group's hunk restrictions.
+    fn select_tree_directory(&mut self, directory: &str, group_idx: Option<usize>) {
+        let mut filter = match group_idx {
+            Some(gi) => self.hunk_filter_for_group(gi),
+            None => {
+                let mut all_files = HunkFilter::new();
+                for file in &self.diff_data.files {
+                    let path = file.target_file.trim_start_matches("b/").to_string();
+                    all_files.insert(path, HashSet::new());
+                }
+                all_files
+            }
+        };
+
+        let prefix = format!("{directory}/");
+        filter.retain(|path, _| path.starts_with(&prefix));
+        self.tree_filter = Some(filter);
+        self.ui_state.selected_index = 0;
+        self.ui_state.scroll_offset = 0;
+        self.active_review_group = None;
+        self.review_scroll = 0;
     }
 
     /// Filter the diff view to all changes in the selected group.

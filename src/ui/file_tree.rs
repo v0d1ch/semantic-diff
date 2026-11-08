@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Block;
 use ratatui::Frame;
+use std::collections::BTreeMap;
 use tui_tree_widget::{Tree, TreeItem};
 
 /// Identifier for tree nodes.
@@ -13,6 +14,7 @@ use tui_tree_widget::{Tree, TreeItem};
 pub enum TreeNodeId {
     Group(usize),
     File(Option<usize>, String), // (group_index, path)
+    Directory(Option<usize>, String),
 }
 
 impl std::fmt::Display for TreeNodeId {
@@ -21,7 +23,87 @@ impl std::fmt::Display for TreeNodeId {
             TreeNodeId::Group(i) => write!(f, "group-{i}"),
             TreeNodeId::File(Some(gi), path) => write!(f, "file-{gi}-{path}"),
             TreeNodeId::File(None, path) => write!(f, "file-{path}"),
+            TreeNodeId::Directory(Some(gi), path) => write!(f, "dir-{gi}-{path}"),
+            TreeNodeId::Directory(None, path) => write!(f, "dir-{path}"),
         }
+    }
+}
+
+struct FileEntry {
+    path: String,
+    is_untracked: bool,
+    suffix: String,
+    added: usize,
+    removed: usize,
+}
+
+#[derive(Default)]
+struct Directory {
+    directories: BTreeMap<String, Directory>,
+    files: BTreeMap<String, FileEntry>,
+}
+
+impl Directory {
+    fn insert(&mut self, entry: FileEntry) {
+        // Own the components so we can move `entry` into the map later.
+        let mut components: Vec<String> = entry.path.split('/').map(str::to_owned).collect();
+        let Some(filename) = components.pop() else {
+            return;
+        };
+
+        let mut directory = self;
+        for component in components {
+            directory = directory.directories.entry(component).or_default();
+        }
+        directory.files.insert(filename, entry);
+    }
+
+    fn into_tree_items(
+        self,
+        group_idx: Option<usize>,
+        parent_path: &str,
+        sidebar_width: u16,
+        depth: u16,
+    ) -> Vec<TreeItem<'static, TreeNodeId>> {
+        let mut items = Vec::new();
+
+        // Emit directories first. BTreeMap iterates in key order.
+        for (name, directory) in self.directories {
+            let path = if parent_path.is_empty() {
+                name.clone()
+            } else {
+                format!("{parent_path}/{name}")
+            };
+            let children =
+                directory.into_tree_items(group_idx, &path, sidebar_width, depth.saturating_add(1));
+            let label = Line::from(Span::styled(
+                format!("{name}/"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ));
+            let item = TreeItem::new(TreeNodeId::Directory(group_idx, path), label, children)
+                .expect("directory builder produces unique sibling identifiers");
+            items.push(item);
+        }
+
+        // Existing overhead: borders(2), highlight(3), node symbol(2).
+        let path_overhead = 7u16.saturating_add(depth.saturating_mul(2));
+        for (filename, file) in self.files {
+            let line = build_file_text(
+                &filename,
+                file.is_untracked,
+                &file.suffix,
+                file.added,
+                file.removed,
+                sidebar_width,
+                path_overhead,
+            );
+            items.push(TreeItem::new_leaf(
+                TreeNodeId::File(group_idx, file.path),
+                line,
+            ));
+        }
+
+        items
     }
 }
 
@@ -51,7 +133,10 @@ fn abbreviate_path(path: &str, max_width: usize) -> String {
     }
 
     let filename = parts.last().unwrap();
-    let mut dirs: Vec<String> = parts[..parts.len() - 1].iter().map(|s| s.to_string()).collect();
+    let mut dirs: Vec<String> = parts[..parts.len() - 1]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
 
     // Abbreviate directories left-to-right until it fits
     for i in 0..dirs.len() {
@@ -127,7 +212,11 @@ fn wrap_spans(spans: Vec<Span<'static>>, max_width: usize, indent: usize) -> Tex
 
     for word in words {
         let word_len = word.text.len();
-        let line_max = if is_first_line { max_width } else { max_width.saturating_sub(indent) };
+        let line_max = if is_first_line {
+            max_width
+        } else {
+            max_width.saturating_sub(indent)
+        };
 
         if current_len + word_len <= line_max || current_len == 0 {
             // Fits on current line, or it's the first word on the line (must place it)
@@ -201,21 +290,17 @@ fn build_file_text(
 
 /// Build a flat list of file items (pre-grouping or when no LLM is available).
 fn build_flat_tree<'a>(app: &App, sidebar_width: u16) -> Vec<TreeItem<'a, TreeNodeId>> {
-    // Available width for path text: sidebar - borders(2) - highlight_symbol(3) - node_symbol(2)
-    let path_overhead: u16 = 2 + 3 + 2;
-
-    app.diff_data
-        .files
-        .iter()
-        .map(|file| {
-            let path = file.target_file.trim_start_matches("b/").to_string();
-            let line = build_file_text(
-                &path, file.is_untracked, "", file.added_count, file.removed_count,
-                sidebar_width, path_overhead,
-            );
-            TreeItem::new_leaf(TreeNodeId::File(None, path), line)
-        })
-        .collect()
+    let mut root = Directory::default();
+    for file in &app.diff_data.files {
+        root.insert(FileEntry {
+            path: file.target_file.trim_start_matches("b/").to_string(),
+            is_untracked: file.is_untracked,
+            suffix: String::new(),
+            added: file.added_count,
+            removed: file.removed_count,
+        });
+    }
+    root.into_tree_items(None, "", sidebar_width, 0)
 }
 
 /// Build a grouped tree from semantic groups (hunk-level).
@@ -229,14 +314,11 @@ fn build_grouped_tree<'a>(
         std::collections::HashMap::new();
     let mut items: Vec<TreeItem<'a, TreeNodeId>> = Vec::new();
 
-    // Available width for nested file path: sidebar - borders(2) - highlight(3) - node_symbol(2) - indent(2)
-    let nested_path_overhead: u16 = 2 + 3 + 2 + 2;
-
     // Available width for group header: sidebar - borders(2) - highlight(3) - node_symbol(2)
     let group_overhead: u16 = 2 + 3 + 2;
 
     for (gi, group) in groups.iter().enumerate() {
-        let mut children: Vec<TreeItem<'a, TreeNodeId>> = Vec::new();
+        let mut root = Directory::default();
         let mut group_added: usize = 0;
         let mut group_removed: usize = 0;
 
@@ -288,13 +370,18 @@ fn build_grouped_tree<'a>(
                     format!(" ({}/{} hunks)", change.hunks.len(), file.hunks.len())
                 };
 
-                let line = build_file_text(
-                    &path, file.is_untracked, &hunk_info, added, removed,
-                    sidebar_width, nested_path_overhead,
-                );
-                children.push(TreeItem::new_leaf(TreeNodeId::File(Some(gi), path), line));
+                root.insert(FileEntry {
+                    path,
+                    is_untracked: file.is_untracked,
+                    suffix: hunk_info,
+                    added,
+                    removed,
+                });
             }
         }
+
+        let children = root.into_tree_items(Some(gi), "", sidebar_width, 1);
+        let file_count = count_file_items(&children);
 
         if !children.is_empty() {
             let header_spans = vec![
@@ -304,17 +391,11 @@ fn build_grouped_tree<'a>(
                         .fg(app.theme.tree_group_fg)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    format!("+{group_added}"),
-                    Style::default().fg(Color::Green),
-                ),
+                Span::styled(format!("+{group_added}"), Style::default().fg(Color::Green)),
                 Span::raw(" "),
+                Span::styled(format!("-{group_removed}"), Style::default().fg(Color::Red)),
                 Span::styled(
-                    format!("-{group_removed}"),
-                    Style::default().fg(Color::Red),
-                ),
-                Span::styled(
-                    format!(", {} files", children.len()),
+                    format!(", {file_count} files"),
                     Style::default().fg(Color::DarkGray),
                 ),
             ];
@@ -327,7 +408,7 @@ fn build_grouped_tree<'a>(
     }
 
     // Add "Other" group for hunks not in any semantic group
-    let mut other_children: Vec<TreeItem<'a, TreeNodeId>> = Vec::new();
+    let mut other_root = Directory::default();
     for file in &app.diff_data.files {
         let path = file.target_file.trim_start_matches("b/").to_string();
         let covered = all_covered.get(&path);
@@ -346,29 +427,42 @@ fn build_grouped_tree<'a>(
         };
 
         if is_other {
-            let line = build_file_text(
-                &path, file.is_untracked, "", file.added_count, file.removed_count,
-                sidebar_width, nested_path_overhead,
-            );
-            other_children.push(TreeItem::new_leaf(TreeNodeId::File(Some(groups.len()), path), line));
+            other_root.insert(FileEntry {
+                path,
+                is_untracked: file.is_untracked,
+                suffix: String::new(),
+                added: file.added_count,
+                removed: file.removed_count,
+            });
         }
     }
 
+    let other_children = other_root.into_tree_items(Some(groups.len()), "", sidebar_width, 1);
+    let other_file_count = count_file_items(&other_children);
+
     if !other_children.is_empty() {
         let header = Line::from(vec![Span::styled(
-            format!("Other ({} files)", other_children.len()),
+            format!("Other ({other_file_count} files)"),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )]);
-        if let Ok(item) =
-            TreeItem::new(TreeNodeId::Group(groups.len()), header, other_children)
-        {
+        if let Ok(item) = TreeItem::new(TreeNodeId::Group(groups.len()), header, other_children) {
             items.push(item);
         }
     }
 
     items
+}
+
+fn count_file_items(items: &[TreeItem<'_, TreeNodeId>]) -> usize {
+    items
+        .iter()
+        .map(|item| match item.identifier() {
+            TreeNodeId::File(_, _) => 1,
+            _ => count_file_items(item.children()),
+        })
+        .sum()
 }
 
 /// Render the file tree sidebar.
@@ -388,18 +482,13 @@ pub fn render_tree(app: &App, frame: &mut Frame, area: Rect) {
 
     let tree = match Tree::new(&items) {
         Ok(tree) => tree
-            .block(
-                Block::bordered()
-                    .title(title)
-                    .border_style(border_style),
-            )
+            .block(Block::bordered().title(title).border_style(border_style))
             .highlight_style(
                 Style::default()
                     .fg(app.theme.tree_highlight_fg)
                     .bg(app.theme.tree_highlight_bg)
                     .add_modifier(Modifier::BOLD),
             )
-            .highlight_symbol(">> ")
             .node_closed_symbol("> ")
             .node_open_symbol("v ")
             .node_no_children_symbol("  "),
@@ -408,6 +497,7 @@ pub fn render_tree(app: &App, frame: &mut Frame, area: Rect) {
 
     frame.render_stateful_widget(tree, area, &mut app.tree_state.borrow_mut());
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -452,10 +542,7 @@ mod tests {
 
     #[test]
     fn test_abbreviate_path_zero_width() {
-        assert_eq!(
-            abbreviate_path("src/main.rs", 0),
-            "src/main.rs"
-        );
+        assert_eq!(abbreviate_path("src/main.rs", 0), "src/main.rs");
     }
 
     #[test]
@@ -467,9 +554,6 @@ mod tests {
     fn test_abbreviate_path_exact_fit_after_partial() {
         // "src/app/main.rs" = 15 chars
         // After abbreviating first: "s/app/main.rs" = 13 chars
-        assert_eq!(
-            abbreviate_path("src/app/main.rs", 13),
-            "s/app/main.rs"
-        );
+        assert_eq!(abbreviate_path("src/app/main.rs", 13), "s/app/main.rs");
     }
 }
