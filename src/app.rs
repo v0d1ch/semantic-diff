@@ -123,6 +123,15 @@ pub enum VisibleItem {
     DiffLine { file_idx: usize, hunk_idx: usize, line_idx: usize },
 }
 
+
+/// A code location to preserve when switching diff views.
+struct DiffAnchor {
+    file_path: String,
+    source_line: Option<usize>,
+    target_line: Option<usize>,
+    screen_row: usize,
+}
+
 /// The main application state (TEA Model).
 pub struct App {
     pub diff_data: DiffData,
@@ -478,17 +487,18 @@ impl App {
                             "Full-file context loaded"
                         );
             
+                        // Capture now so navigation during loading is preserved too.
+                        let anchor = self.capture_diff_anchor();
                         self.full_context_diff = Some(data);
                         
                         if self.ui_state.full_file_context {
-                            self.reset_diff_navigation();
+                            self.restore_diff_anchor(anchor);
                         }
                     }
                     Err(error) => {
                         tracing::error!(%error, "Could not load full-file context");
                         self.full_context_diff = None;
                         self.ui_state.full_file_context = false;
-                        self.reset_diff_navigation();
                     }
                 }
             
@@ -907,9 +917,14 @@ impl App {
 
             KeyCode::Char('f') => {
                 let enable = !self.ui_state.full_file_context;
+                let was_active = self.full_context_active();
+                let anchor = if was_active {
+                    self.capture_diff_anchor()
+                } else {
+                    None
+                };
             
                 self.invalidate_full_context();
-                self.reset_diff_navigation();
             
                 if enable {
                     self.ui_state.full_file_context = true;
@@ -920,6 +935,9 @@ impl App {
                         git_diff_args: self.full_context_git_args(),
                     })
                 } else {
+                    if was_active {
+                        self.restore_diff_anchor(anchor);
+                    }
                     None
                 }
             }
@@ -1526,7 +1544,198 @@ impl App {
     pub fn full_context_active(&self) -> bool {
         self.ui_state.full_file_context && self.full_context_diff.is_some()
     }
-    
+
+    fn capture_diff_anchor(&self) -> Option<DiffAnchor> {
+        use crate::diff::LineType;
+
+        let items = self.visible_items();
+        let selected = self.ui_state.selected_index;
+        let item = items.get(selected)?;
+        let data = self.displayed_diff();
+
+        let (file_idx, source_line, target_line) = match *item {
+            VisibleItem::FileHeader { file_idx } => {
+                (file_idx, None, None)
+            }
+
+            VisibleItem::HunkHeader { file_idx, hunk_idx } => {
+                let hunk = &data.files[file_idx].hunks[hunk_idx];
+
+                (
+                    file_idx,
+                    (hunk.source_start > 0).then_some(hunk.source_start),
+                    (hunk.target_start > 0).then_some(hunk.target_start),
+                )
+            }
+
+            VisibleItem::DiffLine {
+                file_idx,
+                hunk_idx,
+                line_idx,
+            } => {
+                let hunk = &data.files[file_idx].hunks[hunk_idx];
+                let mut source = hunk.source_start;
+                let mut target = hunk.target_start;
+
+                // Count lines before the selected line on each side.
+                for line in hunk.lines.iter().take(line_idx) {
+                    match line.line_type {
+                        LineType::Added => target += 1,
+                        LineType::Removed => source += 1,
+                        LineType::Context => {
+                            source += 1;
+                            target += 1;
+                        }
+                    }
+                }
+
+                let line = &hunk.lines[line_idx];
+                let source_line =
+                    (line.line_type != LineType::Added).then_some(source);
+                let target_line =
+                    (line.line_type != LineType::Removed).then_some(target);
+
+                (file_idx, source_line, target_line)
+            }
+        };
+
+        let top = (self.ui_state.scroll_offset as usize).min(selected);
+        let width = self.ui_state.diff_view_width.get();
+
+        let screen_row = items[top..selected]
+            .iter()
+            .map(|item| self.item_visual_rows(item, width))
+            .sum();
+
+        Some(DiffAnchor {
+            file_path: data.files[file_idx].target_file.clone(),
+            source_line,
+            target_line,
+            screen_row,
+        })
+    }
+
+    fn find_diff_anchor(&self, anchor: &DiffAnchor) -> Option<usize> {
+        use crate::diff::LineType;
+
+        let data = self.displayed_diff();
+        let wanted_file = data.files.iter().position(|file| {
+            file.target_file == anchor.file_path
+        })?;
+
+        let items = self.visible_items();
+        let mut source = 0;
+        let mut target = 0;
+        let mut file_header = None;
+
+        // Store the smallest distance found and its visible-item index.
+        let mut closest: Option<(usize, usize)> = None;
+
+        for (index, item) in items.iter().enumerate() {
+            match *item {
+                VisibleItem::FileHeader { file_idx }
+                    if file_idx == wanted_file =>
+                {
+                    file_header = Some(index);
+
+                    // No line numbers means we originally selected the file header.
+                    if anchor.source_line.is_none() && anchor.target_line.is_none() {
+                        return Some(index);
+                    }
+                }
+
+                VisibleItem::HunkHeader { file_idx, hunk_idx }
+                    if file_idx == wanted_file =>
+                {
+                    let hunk = &data.files[file_idx].hunks[hunk_idx];
+                    source = hunk.source_start;
+                    target = hunk.target_start;
+                }
+
+                VisibleItem::DiffLine {
+                    file_idx,
+                    hunk_idx,
+                    line_idx,
+                } if file_idx == wanted_file => {
+                    let line = &data.files[file_idx].hunks[hunk_idx].lines[line_idx];
+
+                    let source_line =
+                        (line.line_type != LineType::Added).then_some(source);
+                    let target_line =
+                        (line.line_type != LineType::Removed).then_some(target);
+
+                    // Advance the counters for the next visible line.
+                    if source_line.is_some() {
+                        source += 1;
+                    }
+                    if target_line.is_some() {
+                        target += 1;
+                    }
+
+                    // Prefer new-version coordinates. Removed lines use old ones.
+                    let distance = if let Some(saved) = anchor.target_line {
+                        target_line.map(|number| number.abs_diff(saved))
+                    } else {
+                        anchor.source_line.and_then(|saved| {
+                            source_line.map(|number| number.abs_diff(saved))
+                        })
+                    };
+
+                    if let Some(distance) = distance {
+                        if distance == 0 {
+                            return Some(index);
+                        }
+
+                        if closest.map_or(true, |(best, _)| distance < best) {
+                            closest = Some((distance, index));
+                        }
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        closest.map(|(_, index)| index).or(file_header)
+    }
+
+    fn restore_diff_anchor(&mut self, anchor: Option<DiffAnchor>) {
+        // Full context can change hunk indices, so old collapse IDs are stale.
+        self.ui_state.collapsed.clear();
+
+        let items = self.visible_items();
+
+        let selected = anchor
+            .as_ref()
+            .and_then(|saved| self.find_diff_anchor(saved))
+            .unwrap_or(self.ui_state.selected_index)
+            .min(items.len().saturating_sub(1));
+
+        self.ui_state.selected_index = selected;
+
+        let mut remaining_rows = anchor
+            .as_ref()
+            .map_or(0, |saved| saved.screen_row);
+
+        let width = self.ui_state.diff_view_width.get();
+        let mut top = selected;
+
+        // Walk upward until we've restored the selection's screen position.
+        while top > 0 {
+            let rows = self.item_visual_rows(&items[top - 1], width);
+
+            if rows > remaining_rows {
+                break;
+            }
+
+            remaining_rows -= rows;
+            top -= 1;
+        }
+
+        self.ui_state.scroll_offset = top.min(u16::MAX as usize) as u16;
+        self.adjust_scroll();
+    }
+
     fn reset_diff_navigation(&mut self) {
         self.ui_state.selected_index = 0;
         self.ui_state.scroll_offset = 0;
