@@ -6,8 +6,8 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] Hide/show side menu
 - [x] Directly compare the branch to current default branch if no flag
 - [x] View full file shortcut
+- [x] Sidebar display with nested folders
 - [ ] Search through file in the diff panel
-- [ ] Sidebar display with nested folders
 - [ ] Browse the local file in system editor
 - [ ] Post comment using gh tool directly from the cli
 
