@@ -6,6 +6,22 @@ use ratatui::Frame;
 
 /// Render the summary bar at the bottom of the screen.
 pub fn render_summary(app: &App, frame: &mut Frame, area: Rect) {
+    if let Some(pattern) = app.diff_search_pattern() {
+        let status = app.diff_search_status().unwrap_or_default();
+        let line = Line::from(vec![
+            Span::styled(
+                format!(" /{pattern}  {status}"),
+                Style::default().fg(app.theme.help_text_fg),
+            ),
+            Span::styled(
+                "  n/N next/prev · Esc clear",
+                Style::default().fg(app.theme.help_dismiss_fg),
+            ),
+        ]);
+        frame.render_widget(ratatui::widgets::Paragraph::new(line), area);
+        return;
+    }
+
     let total_files = app.diff_data.files.len() + app.diff_data.binary_files.len();
     let total_added: usize = app.diff_data.files.iter().map(|f| f.added_count).sum();
     let total_removed: usize = app.diff_data.files.iter().map(|f| f.removed_count).sum();

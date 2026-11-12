@@ -7,7 +7,7 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] Directly compare the branch to current default branch if no flag
 - [x] View full file shortcut
 - [x] Sidebar display with nested folders
-- [ ] Search through file in the diff panel
+- [x] Search through file in the diff panel
 - [ ] Browse the local file in system editor
 - [ ] Post comment using gh tool directly from the cli
 
@@ -113,13 +113,32 @@ semantic-diff
 | `Enter` | Sidebar: select file/group · Diff: toggle collapse |
 | `Tab` | Switch focus between tree sidebar and diff view |
 | `p` | Toggle markdown preview (.md files) |
-| `/` | Search/filter files |
-| `n/N` | Next/previous search match |
+| `/` | Sidebar: filter filenames · Diff panel: search text |
+| `n/N` | Next/previous matching line in text search; matching file for filename search |
 | `g/G` | Jump to top/bottom |
 | `Ctrl+d/u` | Page down/up |
 | `?` | Show shortcut help |
 | `Escape` | Clear filter / quit |
 | `q` | Quit |
+
+### Search in the diff panel
+
+Focus the diff panel with `Tab`, press `/`, type text, and press `Enter` to
+jump to the first matching line at or after your selection. Matches highlight
+as you type. Search is literal and case-sensitive, and covers added, removed,
+and context lines in the current file/group selection. Without a selection,
+it searches all files shown in the diff panel.
+
+Use `n` and `N` to move between matching lines, wrapping at either end.
+Collapsed files and hunks expand when you jump to a match. The bottom bar
+shows the query and matching-line count, or `No matches`. Use `f` to load
+full-file context when you need to search beyond the diff hunks.
+
+`Esc` cancels a search draft; after confirming, it clears the text search
+without clearing the selected file/group. An empty query followed by `Enter`
+also clears text search. Starting text search from a Markdown preview or
+group review switches to the raw diff. With the sidebar focused, `/` keeps
+its existing filename-filter behavior.
 
 ### Configuration
 

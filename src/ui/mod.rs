@@ -53,7 +53,7 @@ pub fn draw(app: &App, frame: &mut Frame) -> Vec<preview_view::PendingImage> {
 
     // Render bottom bar
     match app.input_mode {
-        InputMode::Search => render_search_bar(app, frame, vertical[1]),
+        InputMode::Search | InputMode::DiffSearch => render_search_bar(app, frame, vertical[1]),
         InputMode::Normal | InputMode::Help | InputMode::Settings => {
             summary::render_summary(app, frame, vertical[1])
         }
@@ -84,7 +84,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
         ("Actions", vec![
             ("Enter", "Sidebar: select file/group | Diff: toggle collapse"),
             ("p", "Toggle markdown preview (.md files)"),
-            ("/", "Search files"),
+            ("/", "Sidebar: filter files | Diff: search text"),
             ("n/N", "Next/prev search match"),
             (",", "Settings"),
             ("Esc", "Clear filter / quit"),
@@ -194,9 +194,13 @@ fn render_settings_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
 
 /// Render the search input bar at the bottom of the screen.
 fn render_search_bar(app: &App, frame: &mut Frame, area: ratatui::layout::Rect) {
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
-            "/ ",
+            if app.input_mode == InputMode::DiffSearch {
+                "/ text: "
+            } else {
+                "/ files: "
+            },
             Style::default()
                 .fg(app.theme.help_key_fg)
                 .add_modifier(Modifier::BOLD),
@@ -211,7 +215,15 @@ fn render_search_bar(app: &App, frame: &mut Frame, area: ratatui::layout::Rect) 
                 .fg(app.theme.help_text_fg)
                 .add_modifier(Modifier::SLOW_BLINK),
         ),
-    ]);
-    let paragraph = ratatui::widgets::Paragraph::new(line);
+    ];
+    if app.input_mode == InputMode::DiffSearch {
+        if let Some(status) = app.diff_search_status() {
+            spans.push(Span::styled(
+                format!("  {status}"),
+                Style::default().fg(app.theme.help_text_fg),
+            ));
+        }
+    }
+    let paragraph = ratatui::widgets::Paragraph::new(Line::from(spans));
     frame.render_widget(paragraph, area);
 }

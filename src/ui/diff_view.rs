@@ -279,6 +279,46 @@ fn render_diff_line(
         ));
     }
 
+    if let Some(pattern) = app.diff_search_pattern() {
+        // Search the original content so a match can cross syntax/inline-diff
+        // span boundaries. Gutter and +/- prefixes must keep their own styles.
+        let ranges: Vec<_> = line.content
+            .match_indices(pattern)
+            .map(|(start, text)| start..start + text.len())
+            .collect();
+        let content_spans = spans.split_off(2);
+        let mut offset = 0;
+        for span in content_spans {
+            let end = offset + span.content.len();
+            let mut cursor = offset;
+            for range in ranges.iter().filter(|range| range.start < end && range.end > offset) {
+                let start = range.start.max(offset);
+                let stop = range.end.min(end);
+                if cursor < start {
+                    spans.push(Span::styled(
+                        span.content[cursor - offset..start - offset].to_owned(),
+                        span.style,
+                    ));
+                }
+                spans.push(Span::styled(
+                    span.content[start - offset..stop - offset].to_owned(),
+                    span.style
+                        .fg(app.theme.search_match_fg)
+                        .bg(app.theme.search_match_bg)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                cursor = stop;
+            }
+            if cursor < end {
+                spans.push(Span::styled(
+                    span.content[cursor - offset..].to_owned(),
+                    span.style,
+                ));
+            }
+            offset = end;
+        }
+    }
+
     Line::from(spans)
 }
 

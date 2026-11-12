@@ -21,6 +21,7 @@ pub type HunkFilter = HashMap<String, HashSet<usize>>;
 pub enum InputMode {
     Normal,
     Search,
+    DiffSearch,
     Help,
     Settings,
 }
@@ -116,7 +117,7 @@ pub struct UiState {
 }
 
 /// An item in the flattened visible list.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VisibleItem {
     FileHeader { file_idx: usize },
     HunkHeader { file_idx: usize, hunk_idx: usize },
@@ -146,12 +147,14 @@ pub struct App {
     pub event_tx: Option<mpsc::Sender<Message>>,
     /// Handle to the current debounce timer task, if any.
     pub debounce_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Current input mode (Normal or Search).
+    /// Current input mode, including filename and diff-text search.
     pub input_mode: InputMode,
     /// Current search query being typed.
     pub search_query: String,
     /// The confirmed filter pattern (set on Enter in search mode).
     pub active_filter: Option<String>,
+    /// Confirmed literal, case-sensitive search in diff line contents.
+    pub diff_search: Option<String>,
     /// Semantic groups from LLM, if available. None = ungrouped.
     pub semantic_groups: Option<Vec<SemanticGroup>>,
     /// Lifecycle state of the current grouping request.
@@ -222,6 +225,7 @@ impl App {
             input_mode: InputMode::Normal,
             search_query: String::new(),
             active_filter: None,
+            diff_search: None,
             semantic_groups: None,
             grouping_status: GroupingStatus::Idle,
             grouping_handle: None,
@@ -599,6 +603,7 @@ impl App {
         match self.input_mode {
             InputMode::Normal => self.handle_key_normal(key),
             InputMode::Search => self.handle_key_search(key),
+            InputMode::DiffSearch => self.handle_key_diff_search(key),
             InputMode::Help => {
                 // Any key closes help
                 self.input_mode = InputMode::Normal;
@@ -657,6 +662,9 @@ impl App {
                 return None;
             }
             KeyCode::Esc => {
+                if self.diff_search.take().is_some() {
+                    return None;
+                }
                 if self.tree_filter.is_some() || self.active_filter.is_some() {
                     self.tree_filter = None;
                     self.active_filter = None;
@@ -668,7 +676,16 @@ impl App {
                 }
             }
             KeyCode::Char('/') => {
-                self.input_mode = InputMode::Search;
+                self.input_mode = match self.focused_panel {
+                    FocusedPanel::FileTree => InputMode::Search,
+                    FocusedPanel::DiffView => {
+                        // Content search operates on the raw diff, including when
+                        // starting from a Markdown preview or a group review.
+                        self.preview_mode = false;
+                        self.active_review_group = None;
+                        InputMode::DiffSearch
+                    }
+                };
                 self.search_query.clear();
                 return None;
             }
@@ -871,11 +888,19 @@ impl App {
         match key.code {
             // Jump to next/previous search match
             KeyCode::Char('n') => {
-                self.jump_to_match(true);
+                if self.diff_search.is_some() {
+                    self.jump_to_diff_match(true, false);
+                } else {
+                    self.jump_to_match(true);
+                }
                 None
             }
             KeyCode::Char('N') => {
-                self.jump_to_match(false);
+                if self.diff_search.is_some() {
+                    self.jump_to_diff_match(false, false);
+                } else {
+                    self.jump_to_match(false);
+                }
                 None
             }
 
@@ -1173,6 +1198,111 @@ impl App {
         }
     }
 
+    fn handle_key_diff_search(&mut self, key: KeyEvent) -> Option<Command> {
+        match key.code {
+            KeyCode::Esc => {
+                // Cancel the draft without changing the previous search or filters.
+                self.input_mode = InputMode::Normal;
+                self.search_query.clear();
+            }
+            KeyCode::Enter => {
+                self.input_mode = InputMode::Normal;
+                self.diff_search = (!self.search_query.is_empty())
+                    .then(|| self.search_query.clone());
+                self.jump_to_diff_match(true, true);
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.search_query.push(c);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Use the draft while typing so highlights and feedback update immediately.
+    pub fn diff_search_pattern(&self) -> Option<&str> {
+        let pattern = if self.input_mode == InputMode::DiffSearch {
+            Some(self.search_query.as_str())
+        } else {
+            self.diff_search.as_deref()
+        };
+        pattern.filter(|pattern| !pattern.is_empty())
+    }
+
+    fn is_diff_match(&self, item: &VisibleItem, pattern: &str) -> bool {
+        match item {
+            VisibleItem::DiffLine {
+                file_idx,
+                hunk_idx,
+                line_idx,
+            } => {
+                self.displayed_diff().files[*file_idx].hunks[*hunk_idx].lines[*line_idx]
+                    .content
+                    .contains(pattern)
+            }
+            _ => false,
+        }
+    }
+
+    /// Count matching lines in the current file/group scope, including collapsed lines.
+    pub fn diff_search_status(&self) -> Option<String> {
+        let pattern = self.diff_search_pattern()?;
+        let current = self.visible_items().get(self.ui_state.selected_index).cloned();
+        let matches: Vec<_> = self.diff_items(false)
+            .into_iter()
+            .filter(|item| self.is_diff_match(item, pattern))
+            .collect();
+        if matches.is_empty() {
+            return Some("No matches".to_owned());
+        }
+        let position = current
+            .as_ref()
+            .and_then(|current| matches.iter().position(|item| item == current));
+        Some(match position {
+            Some(index) => format!("{}/{} matching lines", index + 1, matches.len()),
+            None => format!("{} matching lines", matches.len()),
+        })
+    }
+
+    fn jump_to_diff_match(&mut self, forward: bool, include_current: bool) {
+        let Some(pattern) = self.diff_search.as_deref() else {
+            return;
+        };
+        let current = self.visible_items().get(self.ui_state.selected_index).cloned();
+        // Ignore collapse for searching, but preserve file and hunk filters.
+        let items = self.diff_items(false);
+        if items.is_empty() {
+            return;
+        }
+        let start = current
+            .as_ref()
+            .and_then(|current| items.iter().position(|item| item == current))
+            .unwrap_or(0);
+        let first = if include_current { 0 } else { 1 };
+        let target = (first..items.len() + first).find_map(|offset| {
+            let index = if forward {
+                (start + offset) % items.len()
+            } else {
+                (start + items.len() - offset % items.len()) % items.len()
+            };
+            self.is_diff_match(&items[index], pattern)
+                .then(|| items[index].clone())
+        });
+        if let Some(target @ VisibleItem::DiffLine { file_idx, hunk_idx, .. }) = target {
+            self.ui_state.collapsed.remove(&NodeId::File(file_idx));
+            self.ui_state.collapsed.remove(&NodeId::Hunk(file_idx, hunk_idx));
+            if let Some(index) = self.visible_items().iter().position(|item| item == &target) {
+                self.ui_state.selected_index = index;
+                self.adjust_scroll();
+            }
+        }
+    }
+
     /// Jump to the next or previous file header matching the active filter.
     fn jump_to_match(&mut self, forward: bool) {
         if self.active_filter.is_none() {
@@ -1350,6 +1480,10 @@ impl App {
     /// Compute the list of visible items respecting collapsed state, active filter,
     /// and hunk-level tree filter.
     pub fn visible_items(&self) -> Vec<VisibleItem> {
+        self.diff_items(true)
+    }
+
+    fn diff_items(&self, respect_collapse: bool) -> Vec<VisibleItem> {
         let filter_lower = self
             .active_filter
             .as_ref()
@@ -1376,7 +1510,7 @@ impl App {
             }
 
             items.push(VisibleItem::FileHeader { file_idx: fi });
-            if !self.ui_state.collapsed.contains(&NodeId::File(fi)) {
+            if !respect_collapse || !self.ui_state.collapsed.contains(&NodeId::File(fi)) {
                 for (hi, hunk) in file.hunks.iter().enumerate() {
                     // If hunk filter is active and this hunk isn't in the set, skip it
                     // (empty set = show all hunks for this file)
@@ -1393,7 +1527,7 @@ impl App {
                         file_idx: fi,
                         hunk_idx: hi,
                     });
-                    if !self.ui_state.collapsed.contains(&NodeId::Hunk(fi, hi)) {
+                    if !respect_collapse || !self.ui_state.collapsed.contains(&NodeId::Hunk(fi, hi)) {
                         for (li, _line) in hunk.lines.iter().enumerate() {
                             items.push(VisibleItem::DiffLine {
                                 file_idx: fi,
