@@ -39,6 +39,8 @@ pub fn parse(raw: &str) -> DiffData {
                 .hunks()
                 .iter()
                 .map(|h| {
+                    let mut source_line = h.source_start;
+                    let mut target_line = h.target_start;
                     let lines = h
                         .lines()
                         .iter()
@@ -53,10 +55,32 @@ pub fn parse(raw: &str) -> DiffData {
                                 "-" => LineType::Removed,
                                 _ => LineType::Context,
                             };
+
+                            let (source_number, target_number) = match line_type {
+                                   LineType::Added => {
+                                       let numbers = (None, Some(target_line));
+                                       target_line += 1;
+                                       numbers
+                                   }
+                                   LineType::Removed => {
+                                       let numbers = (Some(source_line), None);
+                                       source_line += 1;
+                                       numbers
+                                   }
+                                   LineType::Context => {
+                                       let numbers = (Some(source_line), Some(target_line));
+                                       source_line += 1;
+                                       target_line += 1;
+                                       numbers
+                                   }
+                            };
+
                             Some(DiffLine {
                                 line_type,
                                 content,
                                 inline_segments: None,
+                                source_line: source_number,
+                                target_line: target_number,
                             })
                         })
                         .collect();

@@ -80,6 +80,8 @@ pub struct DiffLine {
     pub content: String,
     /// Word-level inline diff segments, if computed.
     pub inline_segments: Option<Vec<DiffSegment>>,
+    pub source_line: Option<usize>,
+    pub target_line: Option<usize>,
 }
 
 /// Whether a diff line is added, removed, or context.

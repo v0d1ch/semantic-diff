@@ -221,9 +221,8 @@ fn render_diff_line(
         bg
     };
 
-    // Compute line numbers
-    let (src_num, tgt_num) = compute_line_numbers(hunk, line_idx);
-    let gutter = format_gutter(src_num, tgt_num);
+    // format stored line numbers
+    let gutter = format_gutter(line.source_line, line.target_line);
 
     let mut spans = vec![
         // Line number gutter
@@ -320,34 +319,6 @@ fn render_diff_line(
     }
 
     Line::from(spans)
-}
-
-/// Compute source and target line numbers for a given line within a hunk.
-fn compute_line_numbers(
-    hunk: &crate::diff::Hunk,
-    target_line_idx: usize,
-) -> (Option<usize>, Option<usize>) {
-    let mut src_line = hunk.source_start;
-    let mut tgt_line = hunk.target_start;
-
-    for (i, line) in hunk.lines.iter().enumerate() {
-        if i == target_line_idx {
-            return match line.line_type {
-                LineType::Added => (None, Some(tgt_line)),
-                LineType::Removed => (Some(src_line), None),
-                LineType::Context => (Some(src_line), Some(tgt_line)),
-            };
-        }
-        match line.line_type {
-            LineType::Added => tgt_line += 1,
-            LineType::Removed => src_line += 1,
-            LineType::Context => {
-                src_line += 1;
-                tgt_line += 1;
-            }
-        }
-    }
-    (None, None)
 }
 
 /// Format the line number gutter (4 chars for source, 4 chars for target).
