@@ -9,6 +9,7 @@ use crate::ui::file_tree::TreeNodeId;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use tokio::sync::mpsc;
 use tui_tree_widget::TreeState;
 
@@ -117,13 +118,39 @@ pub struct UiState {
 }
 
 /// An item in the flattened visible list.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisibleItem {
     FileHeader { file_idx: usize },
     HunkHeader { file_idx: usize, hunk_idx: usize },
     DiffLine { file_idx: usize, hunk_idx: usize, line_idx: usize },
 }
 
+impl VisibleItem {
+    /// Document order, with each header preceding its children.
+    fn position(&self) -> (usize, usize, usize) {
+        match *self {
+            Self::FileHeader { file_idx } => (file_idx, 0, 0),
+            Self::HunkHeader { file_idx, hunk_idx } => (file_idx, hunk_idx + 1, 0),
+            Self::DiffLine { file_idx, hunk_idx, line_idx } =>
+                (file_idx, hunk_idx + 1, line_idx + 1),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ItemCache {
+    identity: (usize, usize, bool),
+    filter: Option<String>,
+    tree_filter: Option<HunkFilter>,
+    collapsed: HashSet<NodeId>,
+    items: Option<Rc<Vec<VisibleItem>>>,
+}
+
+struct SearchCache {
+    items: Rc<Vec<VisibleItem>>,
+    query: String,
+    matches: Rc<Vec<VisibleItem>>,
+}
 
 /// A code location to preserve when switching diff views.
 struct DiffAnchor {
@@ -135,6 +162,11 @@ struct DiffAnchor {
 
 /// The main application state (TEA Model).
 pub struct App {
+    visible_cache: RefCell<ItemCache>,
+    expanded_cache: RefCell<ItemCache>,
+    search_cache: RefCell<Option<SearchCache>>,
+    pub(crate) tree_cache: RefCell<crate::ui::file_tree::TreeCache>,
+    pub(crate) preview_cache: RefCell<crate::preview::PreviewCache>,
     pub diff_data: DiffData,
     pub full_context_diff: Option<DiffData>,
     pub full_context_loading: bool,
@@ -205,6 +237,11 @@ impl App {
             _ => None,
         };
         Self {
+            visible_cache: RefCell::new(ItemCache::default()),
+            expanded_cache: RefCell::new(ItemCache::default()),
+            search_cache: RefCell::new(None),
+            tree_cache: RefCell::new(crate::ui::file_tree::TreeCache::default()),
+            preview_cache: RefCell::new(crate::preview::PreviewCache::default()),
             diff_data,
             full_context_diff: None,
             full_context_loading: false,
@@ -251,6 +288,16 @@ impl App {
             review_source: crate::review::detect_review_skill(),
             sidebar_visible: true,
         }
+    }
+
+    /// Call after directly mutating diff contents outside `update` (for example
+    /// in library clients). Normal messages invalidate these caches automatically.
+    pub fn invalidate_derived_data(&self) {
+        *self.visible_cache.borrow_mut() = ItemCache::default();
+        *self.expanded_cache.borrow_mut() = ItemCache::default();
+        *self.search_cache.borrow_mut() = None;
+        *self.tree_cache.borrow_mut() = Default::default();
+        *self.preview_cache.borrow_mut() = Default::default();
     }
 
     /// TEA update: dispatch message to handler, return optional command.
@@ -494,6 +541,7 @@ impl App {
                         // Capture now so navigation during loading is preserved too.
                         let anchor = self.capture_diff_anchor();
                         self.full_context_diff = Some(data);
+                        self.invalidate_derived_data();
                         
                         if self.ui_state.full_file_context {
                             self.restore_diff_anchor(anchor);
@@ -542,6 +590,7 @@ impl App {
 
         // 3. Replace diff data and rebuild highlight cache
         self.diff_data = new_data;
+        self.invalidate_derived_data();
         self.highlight_cache = HighlightCache::new(&self.diff_data, self.theme.syntect_theme);
 
         // 4. Rebuild collapsed set with new indices
@@ -1252,51 +1301,60 @@ impl App {
     /// Count matching lines in the current file/group scope, including collapsed lines.
     pub fn diff_search_status(&self) -> Option<String> {
         let pattern = self.diff_search_pattern()?;
-        let current = self.visible_items().get(self.ui_state.selected_index).cloned();
-        let matches: Vec<_> = self.diff_items(false)
-            .into_iter()
-            .filter(|item| self.is_diff_match(item, pattern))
-            .collect();
+        let current = self.visible_items().get(self.ui_state.selected_index).copied();
+        let matches = self.diff_matches(pattern);
         if matches.is_empty() {
             return Some("No matches".to_owned());
         }
         let position = current
             .as_ref()
-            .and_then(|current| matches.iter().position(|item| item == current));
+            .and_then(|current| matches.binary_search_by_key(&current.position(), VisibleItem::position).ok());
         Some(match position {
             Some(index) => format!("{}/{} matching lines", index + 1, matches.len()),
             None => format!("{} matching lines", matches.len()),
         })
     }
 
+    fn diff_matches(&self, pattern: &str) -> Rc<Vec<VisibleItem>> {
+        let items = self.cached_diff_items(false);
+        let mut cache = self.search_cache.borrow_mut();
+        if let Some(cache) = cache.as_ref() {
+            if Rc::ptr_eq(&cache.items, &items) && cache.query == pattern {
+                return Rc::clone(&cache.matches);
+            }
+        }
+        let matches = Rc::new(items.iter().copied()
+            .filter(|item| self.is_diff_match(item, pattern)).collect());
+        *cache = Some(SearchCache {
+            items,
+            query: pattern.to_owned(),
+            matches: Rc::clone(&matches),
+        });
+        matches
+    }
+
     fn jump_to_diff_match(&mut self, forward: bool, include_current: bool) {
         let Some(pattern) = self.diff_search.as_deref() else {
             return;
         };
-        let current = self.visible_items().get(self.ui_state.selected_index).cloned();
-        // Ignore collapse for searching, but preserve file and hunk filters.
-        let items = self.diff_items(false);
-        if items.is_empty() {
+        let current = self.visible_items().get(self.ui_state.selected_index).copied();
+        let matches = self.diff_matches(pattern);
+        if matches.is_empty() {
             return;
         }
-        let start = current
-            .as_ref()
-            .and_then(|current| items.iter().position(|item| item == current))
-            .unwrap_or(0);
-        let first = if include_current { 0 } else { 1 };
-        let target = (first..items.len() + first).find_map(|offset| {
-            let index = if forward {
-                (start + offset) % items.len()
-            } else {
-                (start + items.len() - offset % items.len()) % items.len()
-            };
-            self.is_diff_match(&items[index], pattern)
-                .then(|| items[index].clone())
-        });
-        if let Some(target @ VisibleItem::DiffLine { file_idx, hunk_idx, .. }) = target {
+        let position = current.map(|item| item.position()).unwrap_or((0, 0, 0));
+        let index = if forward {
+            matches.partition_point(|item| item.position() < position
+                || (!include_current && item.position() == position)) % matches.len()
+        } else {
+            (matches.partition_point(|item| item.position() < position
+                || (include_current && item.position() == position)) + matches.len() - 1) % matches.len()
+        };
+        let target = matches[index];
+        if let VisibleItem::DiffLine { file_idx, hunk_idx, .. } = target {
             self.ui_state.collapsed.remove(&NodeId::File(file_idx));
             self.ui_state.collapsed.remove(&NodeId::Hunk(file_idx, hunk_idx));
-            if let Some(index) = self.visible_items().iter().position(|item| item == &target) {
+            if let Ok(index) = self.visible_items().binary_search_by_key(&target.position(), VisibleItem::position) {
                 self.ui_state.selected_index = index;
                 self.adjust_scroll();
             }
@@ -1479,8 +1537,34 @@ impl App {
 
     /// Compute the list of visible items respecting collapsed state, active filter,
     /// and hunk-level tree filter.
-    pub fn visible_items(&self) -> Vec<VisibleItem> {
-        self.diff_items(true)
+    /// The shared list is reused while only selection or scroll position changes.
+    pub fn visible_items(&self) -> Rc<Vec<VisibleItem>> {
+        self.cached_diff_items(true)
+    }
+
+    fn cached_diff_items(&self, respect_collapse: bool) -> Rc<Vec<VisibleItem>> {
+        let data = self.displayed_diff();
+        let identity = (data.files.as_ptr() as usize, data.files.len(), self.full_context_active());
+        let cache = if respect_collapse { &self.visible_cache } else { &self.expanded_cache };
+        let mut cache = cache.borrow_mut();
+        let valid = cache.identity == identity
+            && cache.filter == self.active_filter
+            && cache.tree_filter == self.tree_filter
+            && (!respect_collapse || cache.collapsed == self.ui_state.collapsed);
+        if valid {
+            if let Some(items) = &cache.items {
+                return Rc::clone(items);
+            }
+        }
+        let items = Rc::new(self.diff_items(respect_collapse));
+        *cache = ItemCache {
+            identity,
+            filter: self.active_filter.clone(),
+            tree_filter: self.tree_filter.clone(),
+            collapsed: if respect_collapse { self.ui_state.collapsed.clone() } else { HashSet::new() },
+            items: Some(Rc::clone(&items)),
+        };
+        items
     }
 
     fn diff_items(&self, respect_collapse: bool) -> Vec<VisibleItem> {
@@ -1680,8 +1764,6 @@ impl App {
     }
 
     fn capture_diff_anchor(&self) -> Option<DiffAnchor> {
-        use crate::diff::LineType;
-
         let items = self.visible_items();
         let selected = self.ui_state.selected_index;
         let item = items.get(selected)?;
@@ -1707,29 +1789,8 @@ impl App {
                 hunk_idx,
                 line_idx,
             } => {
-                let hunk = &data.files[file_idx].hunks[hunk_idx];
-                let mut source = hunk.source_start;
-                let mut target = hunk.target_start;
-
-                // Count lines before the selected line on each side.
-                for line in hunk.lines.iter().take(line_idx) {
-                    match line.line_type {
-                        LineType::Added => target += 1,
-                        LineType::Removed => source += 1,
-                        LineType::Context => {
-                            source += 1;
-                            target += 1;
-                        }
-                    }
-                }
-
-                let line = &hunk.lines[line_idx];
-                let source_line =
-                    (line.line_type != LineType::Added).then_some(source);
-                let target_line =
-                    (line.line_type != LineType::Removed).then_some(target);
-
-                (file_idx, source_line, target_line)
+                let line = &data.files[file_idx].hunks[hunk_idx].lines[line_idx];
+                (file_idx, line.source_line, line.target_line)
             }
         };
 
@@ -1750,16 +1811,12 @@ impl App {
     }
 
     fn find_diff_anchor(&self, anchor: &DiffAnchor) -> Option<usize> {
-        use crate::diff::LineType;
-
         let data = self.displayed_diff();
         let wanted_file = data.files.iter().position(|file| {
             file.target_file == anchor.file_path
         })?;
 
         let items = self.visible_items();
-        let mut source = 0;
-        let mut target = 0;
         let mut file_header = None;
 
         // Store the smallest distance found and its visible-item index.
@@ -1778,14 +1835,6 @@ impl App {
                     }
                 }
 
-                VisibleItem::HunkHeader { file_idx, hunk_idx }
-                    if file_idx == wanted_file =>
-                {
-                    let hunk = &data.files[file_idx].hunks[hunk_idx];
-                    source = hunk.source_start;
-                    target = hunk.target_start;
-                }
-
                 VisibleItem::DiffLine {
                     file_idx,
                     hunk_idx,
@@ -1793,18 +1842,8 @@ impl App {
                 } if file_idx == wanted_file => {
                     let line = &data.files[file_idx].hunks[hunk_idx].lines[line_idx];
 
-                    let source_line =
-                        (line.line_type != LineType::Added).then_some(source);
-                    let target_line =
-                        (line.line_type != LineType::Removed).then_some(target);
-
-                    // Advance the counters for the next visible line.
-                    if source_line.is_some() {
-                        source += 1;
-                    }
-                    if target_line.is_some() {
-                        target += 1;
-                    }
+                    let source_line = line.source_line;
+                    let target_line = line.target_line;
 
                     // Prefer new-version coordinates. Removed lines use old ones.
                     let distance = if let Some(saved) = anchor.target_line {
@@ -1877,9 +1916,123 @@ impl App {
     }
 
     fn invalidate_full_context(&mut self) {
+        self.invalidate_derived_data();
         self.full_context_request_id += 1;
         self.full_context_diff = None;
         self.full_context_loading = false;
         self.ui_state.full_file_context = false;
+    }
+}
+
+#[cfg(test)]
+mod view_cache_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::theme::ThemeMode;
+
+    const DIFF: &str = "diff --git a/test.rs b/test.rs\n--- a/test.rs\n+++ b/test.rs\n@@ -10,2 +20,2 @@\n needle context\n-old needle\n+new needle\n";
+
+    fn app() -> App {
+        let mut config = Config::default_config();
+        config.theme_mode = ThemeMode::Dark;
+        let mut app = App::new(crate::diff::parse(DIFF), &config, vec![]);
+        app.llm_backend = None;
+        app
+    }
+
+    #[test]
+    fn cursor_scroll_and_search_navigation_reuse_items_and_matches() {
+        let mut app = app();
+        let items = app.visible_items();
+        let matches = app.diff_matches("needle");
+        assert_eq!(matches.len(), 3);
+        app.diff_search = Some("needle".into());
+        for _ in 0..20 {
+            app.jump_to_diff_match(true, false);
+            assert!(Rc::ptr_eq(&items, &app.visible_items()));
+            assert!(Rc::ptr_eq(&matches, &app.diff_matches("needle")));
+            assert!(app.diff_search_status().unwrap().ends_with("/3 matching lines"));
+        }
+        app.ui_state.scroll_offset = 1;
+        assert!(Rc::ptr_eq(&items, &app.visible_items()));
+    }
+
+    #[test]
+    fn collapse_rebuilds_visible_items_but_keeps_search_scope() {
+        let mut app = app();
+        let items = app.visible_items();
+        let matches = app.diff_matches("needle");
+        app.ui_state.collapsed.insert(NodeId::File(0));
+        assert_eq!(app.visible_items().len(), 1);
+        assert!(!Rc::ptr_eq(&items, &app.visible_items()));
+        assert!(Rc::ptr_eq(&matches, &app.diff_matches("needle")));
+        app.diff_search = Some("needle".into());
+        app.jump_to_diff_match(true, false);
+        assert!(app.ui_state.collapsed.is_empty());
+        assert_eq!(app.visible_items().len(), items.len());
+    }
+
+    #[test]
+    fn query_and_filters_recompute_only_the_dependent_lists() {
+        let mut app = app();
+        let items = app.visible_items();
+        let matches = app.diff_matches("needle");
+        assert_eq!(app.diff_matches("old").len(), 1);
+        assert!(Rc::ptr_eq(&items, &app.visible_items()));
+        assert!(!Rc::ptr_eq(&matches, &app.diff_matches("old")));
+        app.active_filter = Some("missing".into());
+        assert!(app.visible_items().is_empty());
+        assert!(app.diff_matches("needle").is_empty());
+        app.active_filter = None;
+        app.tree_filter = Some(HashMap::from([("elsewhere.rs".into(), HashSet::new())]));
+        assert!(app.visible_items().is_empty());
+        app.tree_filter = None;
+        assert_eq!(app.diff_matches("needle").len(), 3);
+    }
+
+    #[test]
+    fn refresh_and_full_context_results_invalidate_search_results() {
+        let mut app = app();
+        let items = app.visible_items();
+        let matches = app.diff_matches("needle");
+        app.apply_new_diff_data(crate::diff::parse(&DIFF.replace("needle", "changed")));
+        assert!(!Rc::ptr_eq(&items, &app.visible_items()));
+        assert!(!Rc::ptr_eq(&matches, &app.diff_matches("needle")));
+        assert!(app.diff_matches("needle").is_empty());
+        app.ui_state.full_file_context = true;
+        app.update(Message::FullContextLoaded {
+            request_id: app.full_context_request_id,
+            result: Ok(crate::diff::parse(DIFF)),
+        });
+        assert_eq!(app.diff_matches("needle").len(), 3);
+        app.invalidate_full_context();
+        assert!(app.diff_matches("needle").is_empty());
+        app.diff_data.files[0].hunks[0].lines[0].content = "needle".into();
+        app.invalidate_derived_data();
+        assert_eq!(app.diff_matches("needle").len(), 1);
+    }
+
+    #[test]
+    fn tree_cache_tracks_groups_width_theme_and_diff_refresh() {
+        use crate::ui::file_tree::build_tree_items;
+        let mut app = app();
+        let initial = build_tree_items(&app, 40);
+        app.ui_state.selected_index = 2;
+        app.focused_panel = FocusedPanel::FileTree;
+        assert!(Rc::ptr_eq(&initial, &build_tree_items(&app, 40)));
+        app.semantic_groups = Some(vec![SemanticGroup::new("Group".into(), "".into(), vec![
+            crate::grouper::GroupedChange { file: "test.rs".into(), hunks: vec![0] },
+        ])]);
+        let grouped = build_tree_items(&app, 40);
+        assert!(!Rc::ptr_eq(&initial, &grouped));
+        assert_eq!(grouped[0].identifier(), &TreeNodeId::Group(0));
+        assert!(Rc::ptr_eq(&grouped, &build_tree_items(&app, 40)));
+        assert!(!Rc::ptr_eq(&grouped, &build_tree_items(&app, 25)));
+        let narrow = build_tree_items(&app, 25);
+        app.theme.tree_group_fg = ratatui::style::Color::Red;
+        let themed = build_tree_items(&app, 25);
+        assert!(!Rc::ptr_eq(&narrow, &themed));
+        app.apply_new_diff_data(crate::diff::parse(""));
+        assert!(build_tree_items(&app, 25).is_empty());
     }
 }

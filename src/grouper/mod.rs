@@ -14,7 +14,7 @@ pub struct GroupingResponse {
 
 /// A semantic group of related changes (hunk-level granularity).
 /// Accepts both `changes` (hunk-level) and `files` (file-level fallback) from LLM.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct SemanticGroup {
     pub label: String,
     #[serde(default)]
@@ -62,7 +62,7 @@ impl SemanticGroup {
 }
 
 /// A reference to specific hunks within a file that belong to a group.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct GroupedChange {
     pub file: String,
     /// 0-based hunk indices. If empty, means all hunks in the file.

@@ -1,6 +1,7 @@
 use crate::diff::DiffData;
 use ratatui::style::{Color, Style};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style as SyntectStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
@@ -16,8 +17,10 @@ impl HighlightCache {
     /// `syntect_theme_name` should be a key present in syntect's default ThemeSet
     /// (e.g. "base16-ocean.dark" or "base16-ocean.light").
     pub fn new(diff_data: &DiffData, syntect_theme_name: &str) -> Self {
-        let ss = SyntaxSet::load_defaults_newlines();
-        let ts = ThemeSet::load_defaults();
+        static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+        static THEMES: OnceLock<ThemeSet> = OnceLock::new();
+        let ss = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+        let ts = THEMES.get_or_init(ThemeSet::load_defaults);
         // Fall back to "base16-ocean.dark" if the requested theme is not found.
         let theme = ts
             .themes
@@ -39,7 +42,7 @@ impl HighlightCache {
 
             for (hi, hunk) in file.hunks.iter().enumerate() {
                 for (li, line) in hunk.lines.iter().enumerate() {
-                    let spans = match highlighter.highlight_line(&line.content, &ss) {
+                    let spans = match highlighter.highlight_line(&line.content, ss) {
                         Ok(regions) => regions
                             .into_iter()
                             .map(|(style, text)| {

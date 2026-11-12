@@ -7,7 +7,7 @@ pub enum ThemeMode {
     Auto,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Theme {
     // Diff view
     pub selection_bg: Color,

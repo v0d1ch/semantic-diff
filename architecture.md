@@ -161,6 +161,29 @@ Pending images are flushed by `main.rs` after Ratatui draws the frame.
 
 ## Configuration and persistence
 
+The UI also keeps bounded, in-memory caches:
+
+- `App::visible_items` shares an `Rc<Vec<VisibleItem>>` across navigation and
+  rendering. Diff updates invalidate it; filter, collapse, and full-context
+  changes are checked before reuse. Cursor and scroll changes reuse it.
+- Text search caches matching locations for the query and expanded search
+  scope. Match counts reuse that list, and next/previous navigation uses binary
+  search in document order. Collapse changes do not change the search scope.
+- `ui/file_tree.rs` caches the built sidebar by diff, groups, width, and group
+  color. Grouped construction indexes exact file paths and counts hunk changes
+  once per rebuild.
+- `preview.rs` caches one Markdown source and its parsed blocks. File path,
+  size, and modification time determine whether to reread; width and theme
+  determine whether to reparse. A diff refresh also clears this cache.
+- `highlight.rs` loads Syntect's syntax definitions and themes once per process.
+
+These caches are separate from the persistent AI result caches below.
+Normal `App::update` flows invalidate cached data automatically. Library code
+that directly mutates public diff contents must call
+`App::invalidate_derived_data` afterward. Preview metadata checks avoid file
+reads on ordinary redraws; edits that preserve both file size and modification
+time require an explicit refresh.
+
 - User configuration: `~/.config/semantic-diff.json`, read by `config.rs`.
 - Grouping cache: `semantic-diff-cache.json` inside the repository's Git directory, managed by `cache.rs`.
 - Review cache: `semantic-diff-cache/reviews/` inside the Git directory, managed by `review/mod.rs`.

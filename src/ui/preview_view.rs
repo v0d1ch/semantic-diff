@@ -30,8 +30,11 @@ pub struct PendingImage {
 pub fn render_preview(app: &App, frame: &mut Frame, area: Rect) -> Vec<PendingImage> {
     let mut pending_images = Vec::new();
 
-    let file_content = match get_current_md_content(app) {
-        Some(content) => content,
+    let path = get_current_md_path(app);
+    let blocks = match path.as_ref().and_then(|path|
+        app.preview_cache.borrow_mut().blocks(std::path::Path::new(path), area.width, &app.theme))
+    {
+        Some(blocks) => blocks,
         None => {
             let msg = Paragraph::new(Line::from(Span::styled(
                 " Preview only available for .md files",
@@ -42,14 +45,13 @@ pub fn render_preview(app: &App, frame: &mut Frame, area: Rect) -> Vec<PendingIm
         }
     };
 
-    let blocks = crate::preview::markdown::parse_markdown(&file_content, area.width, &app.theme);
     let can_render_images = matches!(app.image_support, ImageSupport::Supported(_));
 
     // Build segments
     let mut segments: Vec<Segment> = Vec::new();
 
     // Title bar
-    if let Some(path) = get_current_md_path(app) {
+    if let Some(path) = path {
         segments.push(Segment::Text(vec![
             Line::from(vec![
                 Span::styled(
@@ -71,7 +73,7 @@ pub fn render_preview(app: &App, frame: &mut Frame, area: Rect) -> Vec<PendingIm
         ]));
     }
 
-    for block in &blocks {
+    for block in blocks.iter() {
         match block {
             PreviewBlock::Text(lines) => {
                 segments.push(Segment::Text(lines.clone()));
@@ -395,11 +397,6 @@ fn render_mermaid_source(
         "  ```".to_string(),
         Style::default().fg(Color::DarkGray),
     )));
-}
-
-fn get_current_md_content(app: &App) -> Option<String> {
-    let path = get_current_md_path(app)?;
-    std::fs::read_to_string(&path).ok()
 }
 
 fn get_current_md_path(app: &App) -> Option<String> {
