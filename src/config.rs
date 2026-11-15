@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub preferred_ai_cli: Option<AiCli>,
+    pub codex_model: String,
     pub claude_model: String,
     pub copilot_model: String,
     pub theme_mode: ThemeMode,
@@ -15,6 +16,7 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AiCli {
+    Codex,
     Claude,
     Copilot,
 }
@@ -25,6 +27,7 @@ pub enum AiCli {
 struct RawConfig {
     #[serde(rename = "preferred-ai-cli")]
     preferred_ai_cli: Option<AiCli>,
+    codex: CliConfig,
     claude: CliConfig,
     copilot: CliConfig,
     theme: Option<String>,
@@ -49,6 +52,7 @@ impl Config {
     pub fn default_config() -> Self {
         Self {
             preferred_ai_cli: None,
+            codex_model: "luna".to_string(),
             claude_model: "haiku".to_string(),
             copilot_model: "gemini-flash".to_string(),
             theme_mode: ThemeMode::Auto,
@@ -58,6 +62,7 @@ impl Config {
     /// Resolve the model string to pass to the given backend's CLI.
     pub fn model_for_backend(&self, backend: LlmBackend) -> &str {
         match backend {
+            LlmBackend::Codex => &self.codex_model,
             LlmBackend::Claude => &self.claude_model,
             LlmBackend::Copilot => &self.copilot_model,
         }
@@ -65,13 +70,27 @@ impl Config {
 
     /// Detect the best available backend, respecting the user's preference.
     pub fn detect_backend(&self) -> Option<LlmBackend> {
+        let codex_ok = which::which("codex").is_ok();
         let claude_ok = which::which("claude").is_ok();
         let copilot_ok = which::which("copilot").is_ok();
 
         match self.preferred_ai_cli {
+            Some(AiCli::Codex) => {
+                if codex_ok {
+                    Some(LlmBackend::Codex)
+                } else if claude_ok {
+                    Some(LlmBackend::Claude)
+                } else if copilot_ok {
+                    Some(LlmBackend::Copilot)
+                } else {
+                    None
+                }
+            }
             Some(AiCli::Claude) => {
                 if claude_ok {
                     Some(LlmBackend::Claude)
+                } else if codex_ok {
+                    Some(LlmBackend::Codex)
                 } else if copilot_ok {
                     Some(LlmBackend::Copilot)
                 } else {
@@ -81,6 +100,8 @@ impl Config {
             Some(AiCli::Copilot) => {
                 if copilot_ok {
                     Some(LlmBackend::Copilot)
+                } else if codex_ok {
+                    Some(LlmBackend::Codex)
                 } else if claude_ok {
                     Some(LlmBackend::Claude)
                 } else {
@@ -88,8 +109,10 @@ impl Config {
                 }
             }
             None => {
-                // Default: prefer claude, fallback copilot
-                if claude_ok {
+                // Default: prefer codex, fallback claude, copilot
+                if codex_ok {
+                    Some(LlmBackend::Codex)
+                } else if claude_ok {
                     Some(LlmBackend::Claude)
                 } else if copilot_ok {
                     Some(LlmBackend::Copilot)
@@ -176,6 +199,7 @@ pub fn load() -> Config {
 
     Config {
         preferred_ai_cli: raw.preferred_ai_cli,
+        codex_model: resolve_model_for_codex(raw.codex.model.as_deref()),
         claude_model: resolve_model_for_claude(raw.claude.model.as_deref()),
         copilot_model: resolve_model_for_copilot(raw.copilot.model.as_deref()),
         theme_mode: match raw.theme.as_deref() {
@@ -186,6 +210,9 @@ pub fn load() -> Config {
     }
 }
 
+fn resolve_model_for_codex(model: Option<&str>) -> String {
+    todo!("Implement resolve_model_for_claude")
+}
 /// Map any model name to the closest Claude CLI model.
 fn resolve_model_for_claude(model: Option<&str>) -> String {
     let tier = model.map(model_tier).unwrap_or(ModelTier::Fast);

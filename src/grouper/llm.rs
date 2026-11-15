@@ -19,6 +19,7 @@ const MAX_DESC_LEN: usize = 500;
 /// Which LLM backend is available for semantic grouping.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LlmBackend {
+    Codex,
     Claude,
     Copilot,
 }
@@ -64,6 +65,7 @@ pub async fn request_grouping(
     );
 
     let output = match backend {
+        LlmBackend::Codex => invoke_codex(&prompt, model).await?,
         LlmBackend::Claude => invoke_claude(&prompt, model).await?,
         LlmBackend::Copilot => invoke_copilot(&prompt, model).await?,
     };
@@ -171,6 +173,7 @@ async fn request_incremental(
     );
 
     let output = match backend {
+        LlmBackend::Codex => invoke_codex(&prompt, model).await?,
         LlmBackend::Claude => invoke_claude(&prompt, model).await?,
         LlmBackend::Copilot => invoke_copilot(&prompt, model).await?,
     };
@@ -239,9 +242,15 @@ pub async fn invoke_llm_text(
     prompt: &str,
 ) -> anyhow::Result<String> {
     match backend {
+        LlmBackend::Codex => invoke_codex_text(prompt, model).await,
         LlmBackend::Claude => invoke_claude_text(prompt, model).await,
         LlmBackend::Copilot => invoke_copilot(prompt, model).await,
     }
+}
+
+async fn invoke_codex(prompt: &str, model: &str) -> anyhow::Result<String> {
+    todo!("Implement invoke_codex")
+
 }
 
 /// Invoke the `claude` CLI and return the LLM response text.
@@ -303,6 +312,11 @@ async fn invoke_claude(prompt: &str, model: &str) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("missing result field in claude JSON output"))?;
 
     Ok(result_text.to_string())
+}
+
+async fn invoke_codex_text(prompt: &str, model: &str) -> anyhow::Result<String> {
+    todo!("Implement invoke_codex_text")
+
 }
 
 /// Invoke the `claude` CLI with text output format (no JSON wrapper).
