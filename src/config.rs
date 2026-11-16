@@ -8,6 +8,7 @@ use std::path::PathBuf;
 pub struct Config {
     pub preferred_ai_cli: Option<AiCli>,
     pub codex_model: String,
+    pub codex_reasoning_effort: Option<String>,
     pub claude_model: String,
     pub copilot_model: String,
     pub theme_mode: ThemeMode,
@@ -27,7 +28,7 @@ pub enum AiCli {
 struct RawConfig {
     #[serde(rename = "preferred-ai-cli")]
     preferred_ai_cli: Option<AiCli>,
-    codex: CliConfig,
+    codex: CodexCliConfig,
     claude: CliConfig,
     copilot: CliConfig,
     theme: Option<String>,
@@ -37,6 +38,13 @@ struct RawConfig {
 #[serde(default)]
 struct CliConfig {
     model: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct CodexCliConfig {
+    model: Option<String>,
+    reasoning_effort: Option<String>,
 }
 
 /// Model tier for intelligent cross-backend mapping.
@@ -52,6 +60,7 @@ impl Config {
         Self {
             preferred_ai_cli: None,
             codex_model: String::new(),
+            codex_reasoning_effort: None,
             claude_model: "haiku".to_string(),
             copilot_model: "gemini-flash".to_string(),
             theme_mode: ThemeMode::Auto,
@@ -64,6 +73,13 @@ impl Config {
             LlmBackend::Codex => &self.codex_model,
             LlmBackend::Claude => &self.claude_model,
             LlmBackend::Copilot => &self.copilot_model,
+        }
+    }
+
+    pub fn reasoning_effort_for_backend(&self, backend: LlmBackend) -> Option<&str> {
+        match backend {
+            LlmBackend::Codex => self.codex_reasoning_effort.as_deref(),
+            _ => None,
         }
     }
 
@@ -134,10 +150,16 @@ fn config_path() -> Option<PathBuf> {
 
 /// Default config file content with comments explaining each option.
 const DEFAULT_CONFIG: &str = r#"{
-  // Which AI CLI to prefer: "claude" or "copilot"
-  // Falls back to the other if the preferred one is not installed.
-  // If unset, defaults to: claude > copilot
+  // Which AI CLI to prefer: "codex", "claude", or "copilot"
+  // Falls back to another installed CLI if the preferred one is unavailable.
+  // If unset, defaults to: codex > claude > copilot
   // "preferred-ai-cli": "claude",
+
+  // Codex settings: omit either option to use its Codex default.
+  "codex": {
+    // "model": "your-exact-model-id",
+    // "reasoning_effort": "high"
+  },
 
   // Claude CLI settings
   "claude": {
@@ -199,6 +221,11 @@ pub fn load() -> Config {
     Config {
         preferred_ai_cli: raw.preferred_ai_cli,
         codex_model: resolve_model_for_codex(raw.codex.model.as_deref()),
+        codex_reasoning_effort: raw
+            .codex
+            .reasoning_effort
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
         claude_model: resolve_model_for_claude(raw.claude.model.as_deref()),
         copilot_model: resolve_model_for_copilot(raw.copilot.model.as_deref()),
         theme_mode: match raw.theme.as_deref() {
@@ -320,6 +347,31 @@ fn strip_json_comments(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_effort_is_optional_and_does_not_apply_to_other_backends() {
+        let raw: RawConfig =
+            serde_json::from_str(r#"{"codex":{"model":"custom","reasoning_effort":"high"}}"#)
+                .unwrap();
+        assert_eq!(raw.codex.model.as_deref(), Some("custom"));
+        assert_eq!(raw.codex.reasoning_effort.as_deref(), Some("high"));
+        let empty: RawConfig = serde_json::from_str("{}").unwrap();
+        assert!(empty.codex.reasoning_effort.is_none());
+        let mut config = Config::default_config();
+        config.codex_reasoning_effort = Some("high".into());
+        assert_eq!(
+            config.reasoning_effort_for_backend(LlmBackend::Codex),
+            Some("high")
+        );
+        assert_eq!(
+            config.reasoning_effort_for_backend(LlmBackend::Claude),
+            None
+        );
+        assert_eq!(
+            config.reasoning_effort_for_backend(LlmBackend::Copilot),
+            None
+        );
+    }
 
     #[test]
     fn test_strip_line_comments() {

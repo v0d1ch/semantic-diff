@@ -5,9 +5,29 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
+/// Settings that determine the identity of an AI-generated result.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AiCacheKey {
+    pub backend: Option<crate::grouper::llm::LlmBackend>,
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+}
+
+impl AiCacheKey {
+    pub fn hash_content(&self, content_hash: u64) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        "ai-cache-v1".hash(&mut hasher);
+        self.hash(&mut hasher);
+        content_hash.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 /// Cached grouping result stored in .git/semantic-diff-cache.json.
 #[derive(Debug, Serialize, Deserialize)]
 struct CacheEntry {
+    #[serde(default)]
+    ai: Option<AiCacheKey>,
     /// Hash of the raw diff output — if this matches, the cache is valid.
     diff_hash: u64,
     groups: Vec<CachedGroup>,
@@ -55,9 +75,15 @@ pub fn diff_hash(raw_diff: &str) -> u64 {
 
 /// Try to load cached grouping for the given diff hash.
 /// Returns None if no cache, hash mismatch, parse error, or oversized file.
-pub fn load(hash: u64) -> Option<Vec<SemanticGroup>> {
-    let path = cache_path()?;
+pub fn load(hash: u64, ai: &AiCacheKey) -> Option<Vec<SemanticGroup>> {
+    load_from_path(&cache_path()?, hash, ai)
+}
 
+fn load_from_path(
+    path: &std::path::Path,
+    hash: u64,
+    ai: &AiCacheKey,
+) -> Option<Vec<SemanticGroup>> {
     // Reject oversized cache files (FINDING-16: prevent OOM from crafted cache)
     let metadata = std::fs::metadata(&path).ok()?;
     if metadata.len() > 1_048_576 {
@@ -68,6 +94,9 @@ pub fn load(hash: u64) -> Option<Vec<SemanticGroup>> {
 
     let content = std::fs::read_to_string(&path).ok()?;
     let entry: CacheEntry = serde_json::from_str(&content).ok()?;
+    if entry.ai.as_ref() != Some(ai) {
+        return None;
+    }
 
     // Validate cache structure (FINDING-16: reject unreasonable group counts)
     if entry.groups.len() > 50 {
@@ -88,17 +117,19 @@ pub fn load(hash: u64) -> Option<Vec<SemanticGroup>> {
         entry
             .groups
             .into_iter()
-            .map(|g| SemanticGroup::new(
-                g.label,
-                g.description,
-                g.changes
-                    .into_iter()
-                    .map(|c| crate::grouper::GroupedChange {
-                        file: c.file,
-                        hunks: c.hunks,
-                    })
-                    .collect(),
-            ))
+            .map(|g| {
+                SemanticGroup::new(
+                    g.label,
+                    g.description,
+                    g.changes
+                        .into_iter()
+                        .map(|c| crate::grouper::GroupedChange {
+                            file: c.file,
+                            hunks: c.hunks,
+                        })
+                        .collect(),
+                )
+            })
             .collect(),
     )
 }
@@ -109,10 +140,12 @@ pub fn save_with_state(
     groups: &[SemanticGroup],
     head_commit: Option<&str>,
     file_hashes: &HashMap<String, u64>,
+    ai: &AiCacheKey,
 ) {
     let Some(path) = cache_path() else { return };
 
     let entry = CacheEntry {
+        ai: Some(ai.clone()),
         diff_hash: hash,
         groups: groups
             .iter()
@@ -150,9 +183,16 @@ pub fn save_with_state(
 /// Returns None if no cache, HEAD mismatch, empty file hashes, parse error, or oversized file.
 pub fn load_incremental(
     current_head: &str,
+    ai: &AiCacheKey,
 ) -> Option<(Vec<SemanticGroup>, HashMap<String, u64>)> {
-    let path = cache_path()?;
+    load_incremental_from_path(&cache_path()?, current_head, ai)
+}
 
+fn load_incremental_from_path(
+    path: &std::path::Path,
+    current_head: &str,
+    ai: &AiCacheKey,
+) -> Option<(Vec<SemanticGroup>, HashMap<String, u64>)> {
     let metadata = std::fs::metadata(&path).ok()?;
     if metadata.len() > 1_048_576 {
         return None;
@@ -160,6 +200,9 @@ pub fn load_incremental(
 
     let content = std::fs::read_to_string(&path).ok()?;
     let entry: CacheEntry = serde_json::from_str(&content).ok()?;
+    if entry.ai.as_ref() != Some(ai) {
+        return None;
+    }
 
     if entry.groups.len() > 50 {
         return None;
@@ -236,6 +279,47 @@ fn cache_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    fn ai_key() -> AiCacheKey {
+        AiCacheKey {
+            backend: Some(crate::grouper::llm::LlmBackend::Codex),
+            model: "test-model".into(),
+            reasoning_effort: Some("high".into()),
+        }
+    }
+
+    #[test]
+    fn both_grouping_caches_require_matching_ai_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        let ai = ai_key();
+        let mut entry = CacheEntry {
+            ai: Some(ai.clone()),
+            diff_hash: 123,
+            groups: vec![],
+            head_commit: Some("head".into()),
+            file_hashes: HashMap::from([("file.rs".into(), 456)]),
+        };
+        std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert!(load_from_path(&path, 123, &ai).is_some());
+        assert!(load_incremental_from_path(&path, "head", &ai).is_some());
+        let mut changed = ai.clone();
+        changed.reasoning_effort = Some("low".into());
+        let mut model = ai.clone();
+        model.model = "another-model".into();
+        let mut backend = ai.clone();
+        backend.backend = Some(crate::grouper::llm::LlmBackend::Claude);
+        for different in [changed, model, backend] {
+            assert!(load_from_path(&path, 123, &different).is_none());
+            assert!(load_incremental_from_path(&path, "head", &different).is_none());
+            assert_ne!(ai.hash_content(42), different.hash_content(42));
+        }
+        // Old cache files without settings must not silently reuse another model's output.
+        entry.ai = None;
+        std::fs::write(&path, serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert!(load_from_path(&path, 123, &ai).is_none());
+        assert!(load_incremental_from_path(&path, "head", &ai).is_none());
+    }
+
     #[test]
     fn test_diff_hash_deterministic() {
         let a = diff_hash("hello world");
@@ -307,6 +391,7 @@ mod tests {
             });
         }
         let entry = CacheEntry {
+            ai: None,
             diff_hash: 99999,
             groups,
             head_commit: None,

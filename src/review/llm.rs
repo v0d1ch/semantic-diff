@@ -1,7 +1,7 @@
+use super::{ReviewSection, ReviewSource};
+use crate::diff::DiffData;
 use crate::grouper::llm::{invoke_llm_text, LlmBackend};
 use crate::grouper::SemanticGroup;
-use crate::diff::DiffData;
-use super::{ReviewSection, ReviewSource};
 
 fn build_shared_context(group: &SemanticGroup, diff_data: &DiffData) -> String {
     let mut ctx = format!(
@@ -18,7 +18,9 @@ fn build_shared_context(group: &SemanticGroup, diff_data: &DiffData) -> String {
                 ctx.push_str(&format!("\nFILE: {}\n", path));
                 if change.hunks.is_empty() {
                     for (i, hunk) in f.hunks.iter().enumerate() {
-                        let content: String = hunk.lines.iter()
+                        let content: String = hunk
+                            .lines
+                            .iter()
                             .map(|l| l.content.as_str())
                             .collect::<Vec<_>>()
                             .join("\n");
@@ -27,7 +29,9 @@ fn build_shared_context(group: &SemanticGroup, diff_data: &DiffData) -> String {
                 } else {
                     for &hi in &change.hunks {
                         if let Some(hunk) = f.hunks.get(hi) {
-                            let content: String = hunk.lines.iter()
+                            let content: String = hunk
+                                .lines
+                                .iter()
                                 .map(|l| l.content.as_str())
                                 .collect::<Vec<_>>()
                                 .join("\n");
@@ -43,13 +47,18 @@ fn build_shared_context(group: &SemanticGroup, diff_data: &DiffData) -> String {
     ctx
 }
 
-fn build_section_prompt(section: ReviewSection, shared_context: &str, review_source: &ReviewSource) -> String {
+fn build_section_prompt(
+    section: ReviewSection,
+    shared_context: &str,
+    review_source: &ReviewSource,
+) -> String {
     let section_instruction = match section {
         ReviewSection::Why => {
             "Analyze the PURPOSE of these changes. Return a markdown list ranked by importance.\n\
              Each item: one sentence explaining why this change was made.\n\
              Focus on intent, not mechanics. Max 5 items.\n\
-             Return ONLY markdown, no code fences around the whole response.".to_string()
+             Return ONLY markdown, no code fences around the whole response."
+                .to_string()
         }
         ReviewSection::What => {
             "Describe the BEHAVIORAL CHANGES as a markdown table with columns:\n\
@@ -57,7 +66,8 @@ fn build_section_prompt(section: ReviewSection, shared_context: &str, review_sou
              Focus on observable behavior differences, not code structure.\n\
              Risk is one of: none, low, medium, high.\n\
              Omit trivial changes (formatting, imports). Max 10 rows.\n\
-             Return ONLY the markdown table.".to_string()
+             Return ONLY the markdown table."
+                .to_string()
         }
         ReviewSection::How => {
             "If these changes involve complex control flow, state transitions, or\n\
@@ -65,7 +75,8 @@ fn build_section_prompt(section: ReviewSection, shared_context: &str, review_sou
              Use flowchart TD or sequenceDiagram as appropriate.\n\n\
              If the changes are straightforward (simple CRUD, config changes, etc.),\n\
              return exactly the text: SKIP\n\n\
-             Return ONLY the mermaid code block OR the word SKIP.".to_string()
+             Return ONLY the mermaid code block OR the word SKIP."
+                .to_string()
         }
         ReviewSection::Verdict => {
             let skill_preamble = match review_source {
@@ -114,13 +125,16 @@ pub fn build_review_prompt(
 pub async fn invoke_review_section(
     backend: LlmBackend,
     model: &str,
+    reasoning_effort: Option<&str>,
     prompt: &str,
 ) -> Result<String, String> {
     use std::time::Duration;
     match tokio::time::timeout(
         Duration::from_secs(120),
-        invoke_llm_text(backend, model, prompt),
-    ).await {
+        invoke_llm_text(backend, model, reasoning_effort, prompt),
+    )
+    .await
+    {
         Ok(Ok(response)) => Ok(response),
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("LLM timed out after 120s".to_string()),

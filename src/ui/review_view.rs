@@ -14,6 +14,11 @@ pub fn render_review_with_diff(app: &App, frame: &mut Frame, area: Rect) {
     // 1. Review source banner
     render_banner(&app.review_source, &mut lines, &app.theme);
 
+    lines.push(Line::from(Span::styled(
+        " y copy Markdown · R refresh review",
+        Style::default().fg(app.theme.help_dismiss_fg),
+    )));
+
     // 2. Title bar with progress
     if let Some(hash) = app.active_review_group {
         if let Some(review) = app.review_cache.get(&hash) {
@@ -178,7 +183,7 @@ fn render_section(
 fn find_group_label(app: &App, hash: u64) -> String {
     if let Some(groups) = &app.semantic_groups {
         for group in groups {
-            if crate::review::group_content_hash(group) == hash {
+            if app.review_content_hash(group) == hash {
                 return group.label.clone();
             }
         }

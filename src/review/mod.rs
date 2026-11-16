@@ -1,6 +1,7 @@
+pub mod clipboard;
 pub mod llm;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
@@ -58,6 +59,30 @@ pub struct GroupReview {
     pub content_hash: u64,
     pub sections: HashMap<ReviewSection, SectionState>,
     pub source: ReviewSource,
+}
+
+impl GroupReview {
+    /// Export the whole review, independently of viewport size or scroll position.
+    pub fn markdown(&self, label: &str) -> Option<String> {
+        if !self
+            .sections
+            .values()
+            .any(|state| matches!(state, SectionState::Ready(_)))
+        {
+            return None;
+        }
+        let mut output = format!("# Review: {label}\n");
+        for section in ReviewSection::all() {
+            let text = match self.sections.get(&section) {
+                Some(SectionState::Ready(text)) => text.as_str(),
+                Some(SectionState::Error(_)) => "*This section failed to load.*",
+                Some(SectionState::Skipped) => continue,
+                _ => "*This section is still loading.*",
+            };
+            output.push_str(&format!("\n## {}\n\n{text}\n", section.label()));
+        }
+        Some(output)
+    }
 }
 
 const MAX_CACHED_REVIEWS: usize = 20;
@@ -201,7 +226,10 @@ fn review_cache_path(content_hash: u64) -> PathBuf {
 /// (Ready or Skipped). Reviews with errors are not cached so they can be retried.
 pub fn save_review_to_disk(review: &GroupReview) {
     // Don't cache if any section errored — those should be retried
-    let has_errors = review.sections.values().any(|s| matches!(s, SectionState::Error(_)));
+    let has_errors = review
+        .sections
+        .values()
+        .any(|s| matches!(s, SectionState::Error(_)));
     if has_errors {
         return;
     }
@@ -209,7 +237,10 @@ pub fn save_review_to_disk(review: &GroupReview) {
     for (sec, state) in &review.sections {
         match state {
             SectionState::Ready(content) => {
-                sections.insert(sec.label().to_string(), CachedSection::Ready(content.clone()));
+                sections.insert(
+                    sec.label().to_string(),
+                    CachedSection::Ready(content.clone()),
+                );
             }
             SectionState::Skipped => {
                 sections.insert(sec.label().to_string(), CachedSection::Skipped);
@@ -236,7 +267,10 @@ pub fn save_review_to_disk(review: &GroupReview) {
 }
 
 /// Load a review from disk cache, validating against the current review source.
-pub fn load_review_from_disk(content_hash: u64, current_source: &ReviewSource) -> Option<GroupReview> {
+pub fn load_review_from_disk(
+    content_hash: u64,
+    current_source: &ReviewSource,
+) -> Option<GroupReview> {
     let path = review_cache_path(content_hash);
     let data = std::fs::read_to_string(path).ok()?;
     let cached: CachedReview = serde_json::from_str(&data).ok()?;

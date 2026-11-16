@@ -19,7 +19,7 @@ const MAX_LABEL_LEN: usize = 80;
 const MAX_DESC_LEN: usize = 500;
 
 /// Which LLM backend is available for semantic grouping.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum LlmBackend {
     Codex,
     Claude,
@@ -30,12 +30,13 @@ pub enum LlmBackend {
 pub async fn request_grouping_with_timeout(
     backend: LlmBackend,
     model: &str,
+    reasoning_effort: Option<&str>,
     summaries: &str,
 ) -> anyhow::Result<Vec<SemanticGroup>> {
     let model = model.to_string();
     tokio::time::timeout(
         Duration::from_secs(60),
-        request_grouping(backend, &model, summaries),
+        request_grouping(backend, &model, reasoning_effort, summaries),
     )
     .await
     .map_err(|_| anyhow::anyhow!("LLM timed out after 60s"))?
@@ -49,6 +50,7 @@ pub async fn request_grouping_with_timeout(
 pub async fn request_grouping(
     backend: LlmBackend,
     model: &str,
+    reasoning_effort: Option<&str>,
     hunk_summaries: &str,
 ) -> anyhow::Result<Vec<SemanticGroup>> {
     let prompt = format!(
@@ -67,7 +69,7 @@ pub async fn request_grouping(
     );
 
     let output = match backend {
-        LlmBackend::Codex => invoke_codex(&prompt, model).await?,
+        LlmBackend::Codex => invoke_codex(&prompt, model, reasoning_effort).await?,
         LlmBackend::Claude => invoke_claude(&prompt, model).await?,
         LlmBackend::Copilot => invoke_copilot(&prompt, model).await?,
     };
@@ -141,12 +143,13 @@ pub async fn request_grouping(
 pub async fn request_incremental_grouping(
     backend: LlmBackend,
     model: &str,
+    reasoning_effort: Option<&str>,
     summaries: &str,
 ) -> anyhow::Result<Vec<SemanticGroup>> {
     let model = model.to_string();
     tokio::time::timeout(
         Duration::from_secs(60),
-        request_incremental(backend, &model, summaries),
+        request_incremental(backend, &model, reasoning_effort, summaries),
     )
     .await
     .map_err(|_| anyhow::anyhow!("LLM timed out after 60s"))?
@@ -155,6 +158,7 @@ pub async fn request_incremental_grouping(
 async fn request_incremental(
     backend: LlmBackend,
     model: &str,
+    reasoning_effort: Option<&str>,
     hunk_summaries: &str,
 ) -> anyhow::Result<Vec<SemanticGroup>> {
     let prompt = format!(
@@ -175,7 +179,7 @@ async fn request_incremental(
     );
 
     let output = match backend {
-        LlmBackend::Codex => invoke_codex(&prompt, model).await?,
+        LlmBackend::Codex => invoke_codex(&prompt, model, reasoning_effort).await?,
         LlmBackend::Claude => invoke_claude(&prompt, model).await?,
         LlmBackend::Copilot => invoke_copilot(&prompt, model).await?,
     };
@@ -241,21 +245,26 @@ async fn request_incremental(
 pub async fn invoke_llm_text(
     backend: LlmBackend,
     model: &str,
+    reasoning_effort: Option<&str>,
     prompt: &str,
 ) -> anyhow::Result<String> {
     match backend {
-        LlmBackend::Codex => invoke_codex(prompt, model).await,
+        LlmBackend::Codex => invoke_codex(prompt, model, reasoning_effort).await,
         LlmBackend::Claude => invoke_claude_text(prompt, model).await,
         LlmBackend::Copilot => invoke_copilot(prompt, model).await,
     }
 }
 
 /// Codex prints the final response directly for both grouping and review.
-async fn invoke_codex(prompt: &str, model: &str) -> anyhow::Result<String> {
-    run_llm_command(&mut codex_command(model), prompt, "codex").await
+async fn invoke_codex(
+    prompt: &str,
+    model: &str,
+    reasoning_effort: Option<&str>,
+) -> anyhow::Result<String> {
+    run_llm_command(&mut codex_command(model, reasoning_effort), prompt, "codex").await
 }
 
-fn codex_command(model: &str) -> Command {
+fn codex_command(model: &str, reasoning_effort: Option<&str>) -> Command {
     let mut command = Command::new("codex");
     command.args([
         "-a",
@@ -270,6 +279,11 @@ fn codex_command(model: &str) -> Command {
     ]);
     if !model.is_empty() {
         command.args(["--model", model]);
+    }
+    if let Some(effort) = reasoning_effort {
+        // JSON string quoting also produces a valid TOML basic string here.
+        let quoted = serde_json::to_string(effort).expect("string serialization cannot fail");
+        command.args(["--config", &format!("model_reasoning_effort={quoted}")]);
     }
     command
 }
@@ -414,6 +428,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn codex_effort_is_a_quoted_config_argument() {
+        let command = codex_command("test-model", Some("high"));
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--model", "test-model"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--config", "model_reasoning_effort=\"high\""]));
+        assert!(!codex_command("", None)
+            .as_std()
+            .get_args()
+            .any(|arg| arg == "--config"));
+        // Quoting prevents a supplied value from changing the TOML assignment.
+        let escaped = codex_command("", Some("high\"\nother=true"));
+        let last = escaped
+            .as_std()
+            .get_args()
+            .last()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(!last.contains('\n'));
+        let encoded = last.strip_prefix("model_reasoning_effort=").unwrap();
+        assert_eq!(
+            serde_json::from_str::<String>(encoded).unwrap(),
+            "high\"\nother=true"
+        );
+    }
+
+    #[test]
     fn test_extract_json_direct() {
         let input = r#"{"groups": []}"#;
         assert_eq!(extract_json(input).unwrap(), input);
@@ -489,10 +538,10 @@ mod tests {
 
     #[test]
     fn codex_preserves_model_argument_and_omits_an_empty_model() {
-        let command = codex_command("custom-model");
+        let command = codex_command("custom-model", None);
         let args: Vec<_> = command.as_std().get_args().collect();
         assert_eq!(&args[args.len() - 2..], &["--model", "custom-model"]);
-        let default_command = codex_command("");
+        let default_command = codex_command("", None);
         assert!(!default_command
             .as_std()
             .get_args()

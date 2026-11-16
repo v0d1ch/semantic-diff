@@ -38,6 +38,7 @@ pub enum FocusedPanel {
 #[derive(Debug)]
 pub enum Message {
     KeyPress(KeyEvent),
+    ReviewCopied(Result<(), String>),
     Resize(u16, u16),
     RefreshSignal,
     DebouncedRefresh,
@@ -65,6 +66,7 @@ pub enum Command {
     SpawnGrouping {
         backend: LlmBackend,
         model: String,
+        reasoning_effort: Option<String>,
         summaries: String,
         diff_hash: u64,
         head_commit: Option<String>,
@@ -73,6 +75,7 @@ pub enum Command {
     SpawnIncrementalGrouping {
         backend: LlmBackend,
         model: String,
+        reasoning_effort: Option<String>,
         summaries: String,
         diff_hash: u64,
         head_commit: String,
@@ -82,12 +85,14 @@ pub enum Command {
     SpawnReviewSection {
         backend: crate::grouper::llm::LlmBackend,
         model: String,
+        reasoning_effort: Option<String>,
         section: ReviewSection,
         prompt: String,
         group_content_hash: u64,
     },
     SpawnReviewBatch(Vec<Command>),
     CancelReview(u64),
+    CopyReview(String),
     SpawnFullContextDiff {
       git_diff_args: Vec<String>,
       request_id: u64,
@@ -197,6 +202,7 @@ pub struct App {
     pub llm_backend: Option<LlmBackend>,
     /// Model string resolved for the active backend.
     pub llm_model: String,
+    pub llm_reasoning_effort: Option<String>,
     /// Which panel currently has keyboard focus.
     pub focused_panel: FocusedPanel,
     /// Persistent tree state for tui-tree-widget (RefCell for interior mutability in render).
@@ -221,6 +227,7 @@ pub struct App {
     pub review_cache: ReviewCache,
     pub review_handles: std::collections::HashMap<(u64, ReviewSection), tokio::task::JoinHandle<()>>,
     pub active_review_group: Option<u64>,
+    pub review_notice: Option<String>,
     pub review_scroll: usize,
     pub review_source: ReviewSource,
     pub sidebar_visible: bool,
@@ -230,6 +237,7 @@ impl App {
     /// Create a new App with parsed diff data, user config, and git diff arguments.
     pub fn new(diff_data: DiffData, config: &crate::config::Config, git_diff_args: Vec<String>) -> Self {
         let theme = Theme::from_mode(config.theme_mode);
+        let llm_backend = config.detect_backend();
         let highlight_cache = HighlightCache::new(&diff_data, theme.syntect_theme);
         let image_support = crate::preview::mermaid::detect_image_support();
         let mermaid_cache = match &image_support {
@@ -266,9 +274,10 @@ impl App {
             semantic_groups: None,
             grouping_status: GroupingStatus::Idle,
             grouping_handle: None,
-            llm_backend: config.detect_backend(),
-            llm_model: config
-                .detect_backend()
+            llm_reasoning_effort: llm_backend
+                .and_then(|b| config.reasoning_effort_for_backend(b).map(str::to_owned)),
+            llm_backend,
+            llm_model: llm_backend
                 .map(|b| config.model_for_backend(b).to_string())
                 .unwrap_or_default(),
             focused_panel: FocusedPanel::DiffView,
@@ -284,6 +293,7 @@ impl App {
             review_cache: ReviewCache::new(),
             review_handles: std::collections::HashMap::new(),
             active_review_group: None,
+            review_notice: None,
             review_scroll: 0,
             review_source: crate::review::detect_review_skill(),
             sidebar_visible: true,
@@ -303,7 +313,17 @@ impl App {
     /// TEA update: dispatch message to handler, return optional command.
     pub fn update(&mut self, msg: Message) -> Option<Command> {
         match msg {
-            Message::KeyPress(key) => self.handle_key(key),
+            Message::KeyPress(key) => {
+                self.review_notice = None;
+                self.handle_key(key)
+            }
+            Message::ReviewCopied(result) => {
+                self.review_notice = Some(match result {
+                    Ok(()) => "Review copied as Markdown".into(),
+                    Err(error) => format!("Copy failed: {error}"),
+                });
+                None
+            }
             Message::Resize(_w, h) => {
                 self.ui_state.viewport_height = h.saturating_sub(1);
                 None
@@ -335,7 +355,7 @@ impl App {
                 let current_head = crate::cache::get_head_commit();
 
                 // Check exact diff hash cache first (handles identical re-triggers)
-                if let Some(cached) = crate::cache::load(hash) {
+                if let Some(cached) = crate::cache::load(hash, &self.ai_cache_key()) {
                     let mut groups = cached;
                     crate::grouper::normalize_hunk_indices(&mut groups, &self.diff_data);
                     self.semantic_groups = Some(groups);
@@ -382,6 +402,7 @@ impl App {
                                 self.semantic_groups.as_ref().unwrap(),
                                 Some(head),
                                 &new_hashes,
+                                &self.ai_cache_key(),
                             );
                         }
                         return None;
@@ -409,6 +430,7 @@ impl App {
                         return Some(Command::SpawnIncrementalGrouping {
                             backend,
                             model: self.llm_model.clone(),
+                            reasoning_effort: self.llm_reasoning_effort.clone(),
                             summaries,
                             diff_hash: hash,
                             head_commit: current_head.unwrap(),
@@ -430,6 +452,7 @@ impl App {
                     Some(Command::SpawnGrouping {
                         backend,
                         model: self.llm_model.clone(),
+                        reasoning_effort: self.llm_reasoning_effort.clone(),
                         summaries,
                         diff_hash: hash,
                         head_commit: current_head,
@@ -452,6 +475,7 @@ impl App {
                     &groups,
                     current_head.as_deref(),
                     &file_hashes,
+                    &self.ai_cache_key(),
                 );
                 self.previous_head = current_head;
                 self.previous_file_hashes = file_hashes;
@@ -479,6 +503,7 @@ impl App {
                     &merged,
                     Some(&head_commit),
                     &file_hashes,
+                    &self.ai_cache_key(),
                 );
                 self.semantic_groups = Some(merged);
                 self.grouping_status = GroupingStatus::Done;
@@ -823,7 +848,7 @@ impl App {
                 // already cached or in-flight.
                 if let Some(groups) = &self.semantic_groups {
                     if let Some(group) = groups.get(*gi) {
-                        let hash = crate::review::group_content_hash(group);
+                        let hash = self.review_content_hash(group);
                         if self.active_review_group == Some(hash) {
                             return None; // already showing
                         }
@@ -848,6 +873,19 @@ impl App {
         }
     }
 
+    pub fn ai_cache_key(&self) -> crate::cache::AiCacheKey {
+        crate::cache::AiCacheKey {
+            backend: self.llm_backend,
+            model: self.llm_model.clone(),
+            reasoning_effort: self.llm_reasoning_effort.clone(),
+        }
+    }
+
+    pub fn review_content_hash(&self, group: &SemanticGroup) -> u64 {
+        self.ai_cache_key()
+            .hash_content(crate::review::group_content_hash(group))
+    }
+
     /// Spawn reviews for ALL groups. Checks disk cache first, only spawns LLM
     /// calls for groups without cached reviews. Returns a SpawnReviewBatch with
     /// all needed sections, or None if everything is already cached.
@@ -857,7 +895,7 @@ impl App {
         let mut all_cmds: Vec<Command> = Vec::new();
 
         for group in &groups {
-            let hash = crate::review::group_content_hash(group);
+            let hash = self.review_content_hash(group);
 
             // Already in memory cache?
             if self.review_cache.get(&hash).is_some() {
@@ -890,6 +928,7 @@ impl App {
                 all_cmds.push(Command::SpawnReviewSection {
                     backend,
                     model: model.clone(),
+                    reasoning_effort: self.llm_reasoning_effort.clone(),
                     section,
                     prompt,
                     group_content_hash: hash,
@@ -1629,6 +1668,25 @@ impl App {
     /// Handle keys when the review pane is active.
     fn handle_key_review(&mut self, key: KeyEvent) -> Option<Command> {
         match key.code {
+            KeyCode::Char('y') => {
+                let hash = self.active_review_group?;
+                let label = self.semantic_groups.as_ref()
+                    .and_then(|groups| {
+                        groups.iter().find(|group| self.review_content_hash(group) == hash)
+                    })
+                    .map(|group| group.label.as_str())
+                    .unwrap_or("Unknown");
+                let markdown = self.review_cache.get(&hash)
+                    .and_then(|review| review.markdown(label));
+                if let Some(markdown) = markdown {
+                    self.review_notice = Some("Copying review…".into());
+                    Some(Command::CopyReview(markdown))
+                } else {
+                    self.review_notice = Some("No review text available to copy yet".into());
+                    None
+                }
+            }
+
             KeyCode::Char('j') | KeyCode::Down => {
                 self.review_scroll = self.review_scroll.saturating_add(1);
                 None
@@ -1938,6 +1996,69 @@ mod view_cache_tests {
         let mut app = App::new(crate::diff::parse(DIFF), &config, vec![]);
         app.llm_backend = None;
         app
+    }
+
+    #[test]
+    fn review_commands_carry_effort_and_cache_identity_changes() {
+        let mut app = app();
+        app.llm_backend = Some(LlmBackend::Codex);
+        app.llm_model = "test-model-for-effort".into();
+        app.llm_reasoning_effort = Some("high".into());
+        let group = SemanticGroup::new("Effort test".into(), "".into(), vec![]);
+        let original_hash = app.review_content_hash(&group);
+        app.semantic_groups = Some(vec![group.clone()]);
+        let Some(Command::SpawnReviewBatch(commands)) = app.spawn_all_reviews() else {
+            panic!("expected uncached review commands");
+        };
+        assert_eq!(commands.len(), 4);
+        for command in commands {
+            let Command::SpawnReviewSection { backend, model, reasoning_effort, group_content_hash, .. } = command else {
+                panic!("expected review section");
+            };
+            assert_eq!(backend, LlmBackend::Codex);
+            assert_eq!(model, "test-model-for-effort");
+            assert_eq!(reasoning_effort.as_deref(), Some("high"));
+            assert_eq!(group_content_hash, original_hash);
+        }
+        assert!(app.spawn_all_reviews().is_none());
+        app.llm_reasoning_effort = Some("low".into());
+        assert_ne!(app.review_content_hash(&group), original_hash);
+        assert!(matches!(app.spawn_all_reviews(), Some(Command::SpawnReviewBatch(_))));
+    }
+
+    #[test]
+    fn copy_review_uses_full_markdown_and_reports_completion() {
+        let mut app = app();
+        let group = SemanticGroup::new("Copy test".into(), "".into(), vec![]);
+        let hash = app.review_content_hash(&group);
+        app.semantic_groups = Some(vec![group]);
+        app.active_review_group = Some(hash);
+        app.review_scroll = 100;
+        app.review_cache.insert(GroupReview {
+            content_hash: hash, source: ReviewSource::BuiltIn,
+            sections: HashMap::from([
+                (ReviewSection::Why, SectionState::Ready("**All** the text".into())),
+                (ReviewSection::What, SectionState::Loading),
+                (ReviewSection::How, SectionState::Skipped),
+                (ReviewSection::Verdict, SectionState::Error("error".into())),
+            ]),
+        });
+        let Some(Command::CopyReview(text)) = app.update(Message::KeyPress(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))) else {
+            panic!("expected copy command");
+        };
+        assert_eq!(text, "# Review: Copy test\n\n## WHY\n\n**All** the text\n\n## WHAT\n\n*This section is still loading.*\n\n## VERDICT\n\n*This section failed to load.*\n");
+        app.update(Message::ReviewCopied(Ok(())));
+        assert_eq!(app.review_notice.as_deref(), Some("Review copied as Markdown"));
+        app.update(Message::ReviewCopied(Err("clipboard unavailable".into())));
+        assert!(app.review_notice.as_deref().unwrap().contains("clipboard unavailable"));
+    }
+
+    #[test]
+    fn copying_without_ready_sections_does_not_replace_clipboard() {
+        let mut app = app();
+        app.active_review_group = Some(42);
+        assert!(app.update(Message::KeyPress(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))).is_none());
+        assert_eq!(app.review_notice.as_deref(), Some("No review text available to copy yet"));
     }
 
     #[test]

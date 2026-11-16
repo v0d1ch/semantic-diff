@@ -94,6 +94,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
         ]),
         ("Review (on group)", vec![
             ("R", "Force-refresh review"),
+            ("y", "Copy group review as Markdown"),
             ("Esc", "Close review pane"),
         ]),
     ];

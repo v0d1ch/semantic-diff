@@ -25,11 +25,11 @@ fn spawn_review_batch(
 ) {
     if let Command::SpawnReviewBatch(cmds) = cmd {
         for cmd in cmds {
-            if let Command::SpawnReviewSection { backend, model, section, prompt, group_content_hash } = cmd {
+            if let Command::SpawnReviewSection { backend, model, reasoning_effort, section, prompt, group_content_hash } = cmd {
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = crate::review::llm::invoke_review_section(
-                        backend, &model, &prompt,
+                        backend, &model, reasoning_effort.as_deref(), &prompt,
                     ).await;
                     let _ = tx2.send(Message::ReviewSectionReady(group_content_hash, section, result)).await;
                 });
@@ -131,7 +131,7 @@ async fn main() -> Result<()> {
 
     // 7b. Trigger initial semantic grouping — check cache first, then LLM
     let diff_hash = cache::diff_hash(&raw_diff);
-    if let Some(cached_groups) = cache::load(diff_hash) {
+    if let Some(cached_groups) = cache::load(diff_hash, &app.ai_cache_key()) {
         let mut cached_groups = cached_groups;
         grouper::normalize_hunk_indices(&mut cached_groups, &app.diff_data);
         app.semantic_groups = Some(cached_groups);
@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
         let mut used_incremental = false;
 
         if let Some(ref head) = current_head {
-            if let Some((prev_groups, prev_file_hashes)) = cache::load_incremental(head) {
+            if let Some((prev_groups, prev_file_hashes)) = cache::load_incremental(head, &app.ai_cache_key()) {
                 let new_hashes = grouper::compute_all_file_hashes(&app.diff_data);
                 let delta = grouper::compute_diff_delta(&new_hashes, &prev_file_hashes);
 
@@ -176,7 +176,7 @@ async fn main() -> Result<()> {
                     app.grouping_status = grouper::GroupingStatus::Done;
                     app.previous_head = Some(head.clone());
                     app.previous_file_hashes = new_hashes.clone();
-                    cache::save_with_state(diff_hash, app.semantic_groups.as_ref().unwrap(), Some(head), &new_hashes);
+                    cache::save_with_state(diff_hash, app.semantic_groups.as_ref().unwrap(), Some(head), &new_hashes, &app.ai_cache_key());
                     tracing::info!("Incremental cache: pruned removed files");
                     if let Some(cmd) = app.spawn_all_reviews() {
                         spawn_review_batch(cmd, &tx, &mut app);
@@ -186,6 +186,7 @@ async fn main() -> Result<()> {
                     // New/modified files — spawn incremental grouping
                     let summaries = grouper::incremental_hunk_summaries(&app.diff_data, &delta, &prev_groups);
                     let model = app.llm_model.clone();
+                    let reasoning_effort = app.llm_reasoning_effort.clone();
                     let head_clone = head.clone();
                     let tx2 = tx.clone();
                     tracing::info!(
@@ -199,7 +200,7 @@ async fn main() -> Result<()> {
                     app.previous_head = Some(head.clone());
                     app.previous_file_hashes = prev_file_hashes;
                     let handle = tokio::spawn(async move {
-                        match grouper::llm::request_incremental_grouping(backend, &model, &summaries).await {
+                        match grouper::llm::request_incremental_grouping(backend, &model, reasoning_effort.as_deref(), &summaries).await {
                             Ok(groups) => {
                                 let _ = tx2.send(Message::IncrementalGroupingComplete(
                                     groups, delta, new_hashes, diff_hash, head_clone,
@@ -221,9 +222,10 @@ async fn main() -> Result<()> {
             // Full re-group: no incremental state available
             let summaries = grouper::hunk_summaries(&app.diff_data);
             let model = app.llm_model.clone();
+            let reasoning_effort = app.llm_reasoning_effort.clone();
             let tx2 = tx.clone();
             let handle = tokio::spawn(async move {
-                match grouper::llm::request_grouping_with_timeout(backend, &model, &summaries).await {
+                match grouper::llm::request_grouping_with_timeout(backend, &model, reasoning_effort.as_deref(), &summaries).await {
                     Ok(groups) => {
                         let _ = tx2.send(Message::GroupingComplete(groups, diff_hash)).await;
                     }
@@ -270,6 +272,14 @@ async fn main() -> Result<()> {
         if let Some(msg) = rx.recv().await {
             if let Some(cmd) = app.update(msg) {
                 match cmd {
+                    Command::CopyReview(markdown) => {
+                        let tx2 = tx.clone();
+                        tokio::spawn(async move {
+                            let result = review::clipboard::copy_markdown(&markdown).await
+                                .map_err(|error| error.to_string());
+                            let _ = tx2.send(Message::ReviewCopied(result)).await;
+                        });
+                    }
                     Command::SpawnDiffParse { git_diff_args } => {
                         let tx2 = tx.clone();
                         tokio::spawn(async move {
@@ -285,12 +295,13 @@ async fn main() -> Result<()> {
                             }
                         });
                     }
-                    Command::SpawnGrouping { backend, model, summaries, diff_hash, .. } => {
+                    Command::SpawnGrouping { backend, model, reasoning_effort, summaries, diff_hash, .. } => {
                         let tx2 = tx.clone();
                         let handle = tokio::spawn(async move {
                             match crate::grouper::llm::request_grouping_with_timeout(
                                 backend,
                                 &model,
+                                reasoning_effort.as_deref(),
                                 &summaries,
                             )
                             .await
@@ -310,6 +321,7 @@ async fn main() -> Result<()> {
                     Command::SpawnIncrementalGrouping {
                         backend,
                         model,
+                        reasoning_effort,
                         summaries,
                         diff_hash,
                         head_commit,
@@ -321,6 +333,7 @@ async fn main() -> Result<()> {
                             match crate::grouper::llm::request_incremental_grouping(
                                 backend,
                                 &model,
+                                reasoning_effort.as_deref(),
                                 &summaries,
                             )
                             .await

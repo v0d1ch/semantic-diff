@@ -146,13 +146,14 @@ On first run, a default config is created at `~/.config/semantic-diff.json`:
 
 ```jsonc
 {
-  // Which AI CLI to prefer: "claude" or "copilot"
-  // Falls back to the other if preferred is not installed
+  // Which AI CLI to prefer: "codex", "claude", or "copilot"
+  // Falls back to another installed CLI; default order: codex > claude > copilot
   // "preferred-ai-cli": "claude",
 
   "codex": {
-    // Model: "luna" (fast, default), "sol" (balanced), "astra" (powerful)
-    "model": "astra"
+    // Exact model ID; omit to use your Codex default.
+    // "model": "your-exact-model-id",
+    "reasoning_effort": "high"
   },
   "claude": {
     // Model: "haiku" (fast, default), "sonnet" (balanced), "opus" (powerful)
@@ -166,6 +167,23 @@ On first run, a default config is created at `~/.config/semantic-diff.json`:
   }
 }
 ```
+
+Codex model and reasoning effort are independent options. Omit either to use
+its Codex default. Effort levels depend on your model and CLI version; the app
+passes the configured value directly to Codex. See the [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+Restart `semantic-diff` after changing configuration. Grouping and review caches
+include the selected backend, model, and effort, so changing these settings
+regenerates results. Older caches without settings are regenerated once.
+
+### Copying AI reviews
+
+With the review panel focused, press `y` to copy the selected group's entire
+review as Markdown, including text outside the visible viewport. Loading or
+failed sections are marked in the copied text; press `y` again after they finish
+to copy the completed review. The bottom bar confirms success or reports an error.
+
+Copy uses `pbcopy` on macOS, or `wl-copy`, `xclip`, or `xsel` on Linux. Normal
+terminal mouse selection remains available; application mouse capture is not enabled.
 
 ## Requirements
 
