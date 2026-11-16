@@ -21,7 +21,7 @@ Groups your git changes by *meaning* — not just by file path — giving real-t
 
 ## Why
 
-AI coding agents like Claude Code, Cursor, and Copilot generate code faster than you can review it. The bottleneck has shifted from *writing* code to *understanding what changed*.
+AI coding agents like Claude Code, Codex, Cursor, and Copilot generate code faster than you can review it. The bottleneck has shifted from *writing* code to *understanding what changed*.
 
 > *"Claude Code has absolutely zero features that help me review code or do anything else than vibe-coding and accept changes as they come in"*
 > — [Hacker News](https://news.ycombinator.com/item?id=46207784)
@@ -150,6 +150,10 @@ On first run, a default config is created at `~/.config/semantic-diff.json`:
   // Falls back to the other if preferred is not installed
   // "preferred-ai-cli": "claude",
 
+  "codex": {
+    // Model: "luna" (fast, default), "sol" (balanced), "astra" (powerful)
+    "model": "astra"
+  },
   "claude": {
     // Model: "haiku" (fast, default), "sonnet" (balanced), "opus" (powerful)
     // Cross-backend models mapped automatically (gemini-flash → haiku)

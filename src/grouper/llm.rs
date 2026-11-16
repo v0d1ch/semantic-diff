@@ -5,6 +5,8 @@ use tokio::process::Command;
 
 /// Maximum bytes to read from LLM stdout (1MB). Prevents OOM from malicious/broken LLM.
 const MAX_RESPONSE_BYTES: usize = 1_048_576;
+/// Maximum diagnostic output retained from an LLM subprocess (1MB).
+const MAX_STDERR_BYTES: usize = 1_048_576;
 /// Maximum JSON string size before deserialization (100KB).
 const MAX_JSON_SIZE: usize = 102_400;
 /// Maximum number of semantic groups from LLM.
@@ -24,7 +26,7 @@ pub enum LlmBackend {
     Copilot,
 }
 
-/// Request semantic grouping from the detected LLM backend with a 30-second timeout.
+/// Request semantic grouping from the detected LLM backend with a 60-second timeout.
 pub async fn request_grouping_with_timeout(
     backend: LlmBackend,
     model: &str,
@@ -42,8 +44,8 @@ pub async fn request_grouping_with_timeout(
 /// Invoke the LLM backend to group hunks by semantic intent.
 ///
 /// Prompts are piped via stdin to prevent process table exposure of code diffs.
-/// Uses `tokio::process::Command::spawn()` so that aborting the JoinHandle
-/// drops the Child, which sends SIGKILL (critical for ROB-05 cancellation).
+/// The subprocess runner enables `kill_on_drop` so aborting the JoinHandle
+/// also terminates the child (critical for ROB-05 cancellation).
 pub async fn request_grouping(
     backend: LlmBackend,
     model: &str,
@@ -242,185 +244,144 @@ pub async fn invoke_llm_text(
     prompt: &str,
 ) -> anyhow::Result<String> {
     match backend {
-        LlmBackend::Codex => invoke_codex_text(prompt, model).await,
+        LlmBackend::Codex => invoke_codex(prompt, model).await,
         LlmBackend::Claude => invoke_claude_text(prompt, model).await,
         LlmBackend::Copilot => invoke_copilot(prompt, model).await,
     }
 }
 
+/// Codex prints the final response directly for both grouping and review.
 async fn invoke_codex(prompt: &str, model: &str) -> anyhow::Result<String> {
-    todo!("Implement invoke_codex")
-
+    run_llm_command(&mut codex_command(model), prompt, "codex").await
 }
 
-/// Invoke the `claude` CLI and return the LLM response text.
-///
-/// Pipes the prompt via stdin to avoid exposing code diffs in the process table.
-/// The `-p` flag without an argument causes claude to read from stdin.
+fn codex_command(model: &str) -> Command {
+    let mut command = Command::new("codex");
+    command.args([
+        "-a",
+        "never",
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--color",
+        "never",
+        "--ephemeral",
+        "-",
+    ]);
+    if !model.is_empty() {
+        command.args(["--model", model]);
+    }
+    command
+}
+
+/// Invoke Claude with its JSON response wrapper.
 async fn invoke_claude(prompt: &str, model: &str) -> anyhow::Result<String> {
-    use std::process::Stdio;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let mut child = Command::new("claude")
-        .args([
-            "-p",
-            "--output-format",
-            "json",
-            "--model",
-            model,
-            "--max-turns",
-            "1",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    // Write prompt to stdin, then close it
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(prompt.as_bytes()).await?;
-        // stdin is dropped here, closing the pipe
-    }
-
-    // Bounded read from stdout (FINDING-11: prevent OOM from oversized LLM response)
-    let stdout_pipe = child.stdout.take()
-        .ok_or_else(|| anyhow::anyhow!("failed to capture claude stdout"))?;
-    let mut limited = stdout_pipe.take(MAX_RESPONSE_BYTES as u64);
-    let mut buf = Vec::with_capacity(8192);
-    let bytes_read = limited.read_to_end(&mut buf).await?;
-
-    if bytes_read >= MAX_RESPONSE_BYTES {
-        child.kill().await.ok();
-        anyhow::bail!("LLM response exceeded {MAX_RESPONSE_BYTES} byte limit");
-    }
-
-    let status = child.wait().await?;
-    if !status.success() {
-        // Try to read stderr for diagnostics
-        let mut stderr_buf = Vec::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            stderr.read_to_end(&mut stderr_buf).await.ok();
-        }
-        let stderr_str = String::from_utf8_lossy(&stderr_buf);
-        anyhow::bail!("claude exited with status {status}: {stderr_str}");
-    }
-
-    let stdout_str = String::from_utf8(buf)?;
-    let wrapper: serde_json::Value = serde_json::from_str(&stdout_str)?;
+    let mut command = Command::new("claude");
+    command.args([
+        "-p",
+        "--output-format",
+        "json",
+        "--model",
+        model,
+        "--max-turns",
+        "1",
+    ]);
+    let output = run_llm_command(&mut command, prompt, "claude").await?;
+    let wrapper: serde_json::Value = serde_json::from_str(&output)?;
     let result_text = wrapper["result"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing result field in claude JSON output"))?;
-
-    Ok(result_text.to_string())
+    Ok(result_text.to_owned())
 }
 
-async fn invoke_codex_text(prompt: &str, model: &str) -> anyhow::Result<String> {
-    todo!("Implement invoke_codex_text")
-
-}
-
-/// Invoke the `claude` CLI with text output format (no JSON wrapper).
-/// Used for free-form responses like review summaries.
+/// Invoke Claude without a JSON wrapper for free-form review responses.
 async fn invoke_claude_text(prompt: &str, model: &str) -> anyhow::Result<String> {
-    use std::process::Stdio;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let mut child = Command::new("claude")
-        .args([
-            "-p",
-            "--output-format",
-            "text",
-            "--model",
-            model,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(prompt.as_bytes()).await?;
-    }
-
-    // Read stdout and stderr concurrently to avoid deadlock if stderr pipe fills up
-    let stdout_pipe = child.stdout.take()
-        .ok_or_else(|| anyhow::anyhow!("failed to capture claude stdout"))?;
-    let stderr_pipe = child.stderr.take();
-
-    let stdout_fut = async {
-        let mut limited = stdout_pipe.take(MAX_RESPONSE_BYTES as u64);
-        let mut buf = Vec::with_capacity(8192);
-        let bytes_read = limited.read_to_end(&mut buf).await?;
-        Ok::<(Vec<u8>, usize), std::io::Error>((buf, bytes_read))
-    };
-    let stderr_fut = async {
-        let mut stderr_buf = Vec::new();
-        if let Some(mut stderr) = stderr_pipe {
-            stderr.read_to_end(&mut stderr_buf).await.ok();
-        }
-        stderr_buf
-    };
-
-    let (stdout_result, stderr_buf) = tokio::join!(stdout_fut, stderr_fut);
-    let (buf, bytes_read) = stdout_result?;
-
-    if bytes_read >= MAX_RESPONSE_BYTES {
-        child.kill().await.ok();
-        anyhow::bail!("LLM response exceeded {MAX_RESPONSE_BYTES} byte limit");
-    }
-
-    let status = child.wait().await?;
-    if !status.success() {
-        let stderr_str = String::from_utf8_lossy(&stderr_buf);
-        anyhow::bail!("claude exited with status {status}: {stderr_str}");
-    }
-
-    Ok(String::from_utf8(buf)?)
+    let mut command = Command::new("claude");
+    command.args(["-p", "--output-format", "text", "--model", model]);
+    run_llm_command(&mut command, prompt, "claude").await
 }
 
-/// Invoke `copilot --yolo` and return the LLM response text.
-///
-/// Pipes the prompt via stdin to avoid exposing code diffs in the process table.
-/// Without a positional prompt argument, copilot reads from stdin.
+/// Invoke Copilot, reading the prompt from stdin.
 async fn invoke_copilot(prompt: &str, model: &str) -> anyhow::Result<String> {
-    use std::process::Stdio;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut command = Command::new("copilot");
+    command.args(["--yolo", "--model", model]);
+    run_llm_command(&mut command, prompt, "copilot").await
+}
 
-    let mut child = Command::new("copilot")
-        .args(["--yolo", "--model", model])
+/// Keep prompts off the command line and service all three pipes concurrently.
+/// Dropping this future (timeout or task cancellation) also kills the child.
+async fn run_llm_command(
+    command: &mut Command,
+    prompt: &str,
+    backend: &str,
+) -> anyhow::Result<String> {
+    use anyhow::Context;
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()?;
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("failed to start {backend}"))?;
+    let mut stdin = child.stdin.take().context("failed to capture LLM stdin")?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("failed to capture LLM stdout")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("failed to capture LLM stderr")?;
 
-    // Write prompt to stdin, then close it
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(prompt.as_bytes()).await?;
-    }
-
-    // Bounded read from stdout (FINDING-11: prevent OOM from oversized LLM response)
-    let stdout_pipe = child.stdout.take()
-        .ok_or_else(|| anyhow::anyhow!("failed to capture copilot stdout"))?;
-    let mut limited = stdout_pipe.take(MAX_RESPONSE_BYTES as u64);
-    let mut buf = Vec::with_capacity(8192);
-    let bytes_read = limited.read_to_end(&mut buf).await?;
-
-    if bytes_read >= MAX_RESPONSE_BYTES {
-        child.kill().await.ok();
-        anyhow::bail!("LLM response exceeded {MAX_RESPONSE_BYTES} byte limit");
-    }
+    let write_prompt = async move {
+        // Keep a write failure until after checking the exit status, so an early
+        // CLI failure still reports its stderr. Dropping stdin signals EOF.
+        Ok::<_, anyhow::Error>(stdin.write_all(prompt.as_bytes()).await)
+    };
+    // try_join! returns immediately on overflow/read errors, even if another
+    // stream stays open. A plain join! would delay the kill indefinitely.
+    let io_result = tokio::try_join!(
+        write_prompt,
+        read_bounded(stdout, MAX_RESPONSE_BYTES, "stdout"),
+        read_bounded(stderr, MAX_STDERR_BYTES, "stderr"),
+    );
+    let (write_result, stdout, stderr) = match io_result {
+        Ok(output) => output,
+        Err(error) => {
+            // kill() also waits for/reaps the child on this error path.
+            child.kill().await.ok();
+            return Err(error.context(format!("failed to communicate with {backend}")));
+        }
+    };
 
     let status = child.wait().await?;
     if !status.success() {
-        let mut stderr_buf = Vec::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            stderr.read_to_end(&mut stderr_buf).await.ok();
-        }
-        let stderr_str = String::from_utf8_lossy(&stderr_buf);
-        anyhow::bail!("copilot exited with status {status}: {stderr_str}");
+        anyhow::bail!(
+            "{backend} exited with status {status}: {}",
+            String::from_utf8_lossy(&stderr)
+        );
     }
+    write_result.context("failed to write LLM prompt")?;
+    Ok(String::from_utf8(stdout)?)
+}
 
-    Ok(String::from_utf8(buf)?)
+async fn read_bounded(
+    reader: impl tokio::io::AsyncRead + Unpin,
+    limit: usize,
+    stream: &str,
+) -> anyhow::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let mut buf = Vec::with_capacity(8192.min(limit));
+    // One extra byte distinguishes an exact-limit response from overflow.
+    reader.take(limit as u64 + 1).read_to_end(&mut buf).await?;
+    if buf.len() > limit {
+        anyhow::bail!("LLM {stream} exceeded {limit} byte limit");
+    }
+    Ok(buf)
 }
 
 /// Extract JSON from text that may be wrapped in ```json ... ``` code fences.
@@ -500,96 +461,6 @@ mod tests {
         assert!(response.groups[0].changes()[0].hunks.is_empty());
     }
 
-    /// Verify invoke_claude uses Stdio::piped for stdin (structural test).
-    /// This reads the source file and checks that the invoke_claude function
-    /// uses stdin(Stdio::piped()) instead of passing prompt as CLI arg.
-    #[test]
-    fn test_invoke_claude_uses_stdin_pipe() {
-        let src = include_str!("llm.rs");
-        // Find the invoke_claude function body
-        let claude_start = src.find("async fn invoke_claude").expect("invoke_claude not found");
-        let claude_body = &src[claude_start..];
-        // Find the end of the function (next "async fn" or end of non-test code)
-        let end = claude_body[1..].find("\nasync fn").unwrap_or(claude_body.len());
-        let claude_fn = &claude_body[..end];
-
-        assert!(
-            claude_fn.contains("Stdio::piped()"),
-            "invoke_claude must use Stdio::piped() for stdin"
-        );
-        assert!(
-            claude_fn.contains("write_all"),
-            "invoke_claude must write prompt to stdin via write_all"
-        );
-        // Prompt should NOT appear inside the .args([...]) array
-        if let Some(args_start) = claude_fn.find(".args([") {
-            let args_section = &claude_fn[args_start..];
-            let args_end = args_section.find("])").expect("unclosed .args");
-            let args_content = &args_section[..args_end];
-            assert!(
-                !args_content.contains("prompt"),
-                "invoke_claude must not pass prompt in .args()"
-            );
-        }
-    }
-
-    /// Verify invoke_copilot uses Stdio::piped for stdin (structural test).
-    #[test]
-    fn test_invoke_copilot_uses_stdin_pipe() {
-        let src = include_str!("llm.rs");
-        let copilot_start = src.find("async fn invoke_copilot").expect("invoke_copilot not found");
-        let copilot_body = &src[copilot_start..];
-        let end = copilot_body[1..].find("\n/// ").or_else(|| copilot_body[1..].find("\n#[cfg(test)]")).unwrap_or(copilot_body.len());
-        let copilot_fn = &copilot_body[..end];
-
-        assert!(
-            copilot_fn.contains("Stdio::piped()"),
-            "invoke_copilot must use Stdio::piped() for stdin"
-        );
-        assert!(
-            copilot_fn.contains("write_all"),
-            "invoke_copilot must write prompt to stdin via write_all"
-        );
-    }
-
-    /// Verify neither invoke function passes prompt string in .args()
-    #[test]
-    fn test_no_prompt_in_args() {
-        let src = include_str!("llm.rs");
-        // Check invoke_claude: the .args array should not contain "prompt"
-        let claude_start = src.find("async fn invoke_claude").expect("invoke_claude not found");
-        let claude_body = &src[claude_start..];
-        let end = claude_body[1..].find("\nasync fn").unwrap_or(claude_body.len());
-        let claude_fn = &claude_body[..end];
-
-        // Find the .args([...]) block and ensure "prompt" is not inside it
-        if let Some(args_start) = claude_fn.find(".args([") {
-            let args_section = &claude_fn[args_start..];
-            let args_end = args_section.find("])").expect("unclosed .args");
-            let args_content = &args_section[..args_end];
-            assert!(
-                !args_content.contains("prompt"),
-                "invoke_claude .args() must not contain prompt variable"
-            );
-        }
-
-        // Check invoke_copilot
-        let copilot_start = src.find("async fn invoke_copilot").expect("invoke_copilot not found");
-        let copilot_body = &src[copilot_start..];
-        let end2 = copilot_body[1..].find("\n/// ").or_else(|| copilot_body[1..].find("\n#[cfg(test)]")).unwrap_or(copilot_body.len());
-        let copilot_fn = &copilot_body[..end2];
-
-        if let Some(args_start) = copilot_fn.find(".args([") {
-            let args_section = &copilot_fn[args_start..];
-            let args_end = args_section.find("])").expect("unclosed .args");
-            let args_content = &args_section[..args_end];
-            assert!(
-                !args_content.contains("prompt"),
-                "invoke_copilot .args() must not contain prompt variable"
-            );
-        }
-    }
-
     #[test]
     fn test_parse_files_fallback() {
         // LLM returns old "files" format instead of "changes"
@@ -607,24 +478,25 @@ mod tests {
         assert!(changes[0].hunks.is_empty()); // all hunks
     }
 
-    // --- Bounded reading tests ---
-
-    #[test]
-    fn test_read_bounded_under_limit() {
-        // Simulate: content under MAX_RESPONSE_BYTES should be fully read
-        let data = "hello world";
-        assert!(data.len() < MAX_RESPONSE_BYTES);
-        // The bounded read logic uses .take() -- we test the constant is reasonable
-        assert_eq!(MAX_RESPONSE_BYTES, 1_048_576);
+    #[tokio::test]
+    async fn bounded_reader_accepts_exact_limit_and_rejects_overflow() {
+        assert_eq!(
+            read_bounded(&b"1234"[..], 4, "stdout").await.unwrap(),
+            b"1234"
+        );
+        assert!(read_bounded(&b"12345"[..], 4, "stdout").await.is_err());
     }
 
     #[test]
-    fn test_read_bounded_over_limit_constant() {
-        // Verify the constant is 1MB
-        assert_eq!(MAX_RESPONSE_BYTES, 1_048_576);
-        // A response at or over this limit should be rejected
-        let oversized = vec![b'x'; MAX_RESPONSE_BYTES];
-        assert!(oversized.len() >= MAX_RESPONSE_BYTES);
+    fn codex_preserves_model_argument_and_omits_an_empty_model() {
+        let command = codex_command("custom-model");
+        let args: Vec<_> = command.as_std().get_args().collect();
+        assert_eq!(&args[args.len() - 2..], &["--model", "custom-model"]);
+        let default_command = codex_command("");
+        assert!(!default_command
+            .as_std()
+            .get_args()
+            .any(|arg| arg == "--model"));
     }
 
     // --- Validation tests ---
@@ -632,8 +504,10 @@ mod tests {
     #[test]
     fn test_validate_rejects_oversized_json() {
         // JSON string > MAX_JSON_SIZE (100KB) should be rejected
-        let large_json = format!(r#"{{"groups": [{{"label": "x", "description": "{}", "changes": []}}]}}"#,
-            "a".repeat(MAX_JSON_SIZE + 1));
+        let large_json = format!(
+            r#"{{"groups": [{{"label": "x", "description": "{}", "changes": []}}]}}"#,
+            "a".repeat(MAX_JSON_SIZE + 1)
+        );
         assert!(large_json.len() > MAX_JSON_SIZE);
         // In request_grouping, this would bail before deserialization
     }
@@ -714,7 +588,161 @@ mod tests {
         let response: GroupingResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(response.groups[0].changes().len(), 250);
         // After validation, changes should be capped
-        let capped: Vec<_> = response.groups[0].changes().into_iter().take(MAX_CHANGES_PER_GROUP).collect();
+        let capped: Vec<_> = response.groups[0]
+            .changes()
+            .into_iter()
+            .take(MAX_CHANGES_PER_GROUP)
+            .collect();
         assert_eq!(capped.len(), 200);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod subprocess_tests {
+    use super::*;
+    use std::process::Stdio;
+
+    async fn run_script(script: &str, prompt: &str) -> anyhow::Result<String> {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_llm_command(&mut command, prompt, "fake-llm"),
+        )
+        .await
+        .expect("subprocess runner hung")
+    }
+
+    #[tokio::test]
+    async fn returns_raw_json_and_markdown_from_stdin() {
+        for response in [r#"{"groups": []}"#, "## Review\nLooks good."] {
+            // There are no prompt arguments; cat must receive it through stdin.
+            let result = run_script("test \"$#\" -eq 0 || exit 1; cat", response)
+                .await
+                .unwrap();
+            assert_eq!(result, response);
+        }
+    }
+
+    #[tokio::test]
+    async fn drains_output_while_writing_a_large_prompt() {
+        // Write more than a pipe can hold before consuming the large prompt.
+        // Sequential stdin/stdout/stderr handling deadlocks here.
+        let script = "dd if=/dev/zero bs=4096 count=32 2>/dev/null; \
+                      dd if=/dev/zero bs=4096 count=32 >&2 2>/dev/null; cat";
+        let prompt = "x".repeat(256 * 1024);
+        let result = run_script(script, &prompt).await.unwrap();
+        assert_eq!(result.len(), 128 * 1024 + prompt.len());
+        assert!(result.ends_with(&prompt));
+    }
+
+    #[tokio::test]
+    async fn reports_stderr_when_child_exits_before_reading_stdin() {
+        let error = run_script(
+            "printf 'invalid model' >&2; exit 7",
+            &"x".repeat(256 * 1024),
+        )
+        .await
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("invalid model"), "{message}");
+        assert!(message.contains('7'), "{message}");
+    }
+
+    #[tokio::test]
+    async fn overflow_stops_child_even_when_other_stream_stays_open() {
+        for stream in ["stdout", "stderr"] {
+            let redirect = if stream == "stderr" { ">&2" } else { "" };
+            let script = format!(
+                "dd if=/dev/zero bs=4096 count=257 {redirect} 2>/dev/null; while :; do :; done"
+            );
+            let error = run_script(&script, "").await.unwrap_err();
+            let message = format!("{error:#}");
+            assert!(message.contains(&format!("{stream} exceeded")), "{message}");
+        }
+    }
+
+    async fn wait_for_pid(path: &std::path::Path) -> String {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(path) {
+                    if !pid.is_empty() {
+                        return pid;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("child did not start")
+    }
+
+    async fn assert_process_stopped(pid: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let running = Command::new("/bin/kill")
+                    .args(["-0", pid])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await
+                    .unwrap()
+                    .success();
+                if !running {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled subprocess is still running");
+    }
+
+    #[tokio::test]
+    async fn aborting_request_kills_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "printf '%s' \"$$\" > \"$1\"; exec /bin/sleep 30",
+                "fake-llm",
+            ])
+            .arg(&pid_path);
+        let task = tokio::spawn(async move { run_llm_command(&mut command, "", "fake-llm").await });
+        let pid = wait_for_pid(&pid_path).await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_process_stopped(&pid).await;
+    }
+
+    #[tokio::test]
+    async fn timeout_kills_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "printf '%s' \"$$\" > \"$1\"; exec /bin/sleep 30",
+                "fake-llm",
+            ])
+            .arg(&pid_path);
+        // First poll the runner until the child starts, then time out that same
+        // future. This avoids relying on process startup finishing in a fixed time.
+        let pid;
+        {
+            let request = run_llm_command(&mut command, "", "fake-llm");
+            tokio::pin!(request);
+            pid = tokio::select! {
+                pid = wait_for_pid(&pid_path) => pid,
+                result = &mut request => panic!("child exited early: {result:?}"),
+            };
+            assert!(tokio::time::timeout(Duration::from_millis(20), request)
+                .await
+                .is_err());
+        }
+        assert_process_stopped(&pid).await;
     }
 }

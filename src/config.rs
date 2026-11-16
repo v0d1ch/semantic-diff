@@ -39,7 +39,6 @@ struct CliConfig {
     model: Option<String>,
 }
 
-
 /// Model tier for intelligent cross-backend mapping.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ModelTier {
@@ -52,7 +51,7 @@ impl Config {
     pub fn default_config() -> Self {
         Self {
             preferred_ai_cli: None,
-            codex_model: "luna".to_string(),
+            codex_model: String::new(),
             claude_model: "haiku".to_string(),
             copilot_model: "gemini-flash".to_string(),
             theme_mode: ThemeMode::Auto,
@@ -211,8 +210,10 @@ pub fn load() -> Config {
 }
 
 fn resolve_model_for_codex(model: Option<&str>) -> String {
-    todo!("Implement resolve_model_for_claude")
+    // An empty value lets Codex use its own configured default.
+    model.unwrap_or_default().to_owned()
 }
+
 /// Map any model name to the closest Claude CLI model.
 fn resolve_model_for_claude(model: Option<&str>) -> String {
     let tier = model.map(model_tier).unwrap_or(ModelTier::Fast);
@@ -370,6 +371,19 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_codex_model() {
+        assert_eq!(resolve_model_for_codex(Some("gpt-6.1-sol")), "gpt-6.1-sol");
+        assert_eq!(resolve_model_for_codex(Some("luna")), "luna");
+        assert_eq!(
+            resolve_model_for_codex(Some("custom-model")),
+            "custom-model"
+        );
+        assert_eq!(resolve_model_for_codex(Some("")), "");
+        assert_eq!(resolve_model_for_codex(None), "");
+        assert_eq!(Config::default_config().codex_model, "");
+    }
+
+    #[test]
     fn test_resolve_claude_model() {
         assert_eq!(resolve_model_for_claude(Some("gemini-flash")), "haiku");
         assert_eq!(resolve_model_for_claude(Some("sonnet")), "sonnet");
@@ -380,7 +394,10 @@ mod tests {
 
     #[test]
     fn test_resolve_copilot_model() {
-        assert_eq!(resolve_model_for_copilot(Some("gemini-flash")), "gemini-flash");
+        assert_eq!(
+            resolve_model_for_copilot(Some("gemini-flash")),
+            "gemini-flash"
+        );
         assert_eq!(resolve_model_for_copilot(Some("sonnet")), "sonnet");
         assert_eq!(resolve_model_for_copilot(Some("haiku")), "haiku");
         assert_eq!(resolve_model_for_copilot(None), "gemini-flash");
@@ -425,7 +442,9 @@ mod tests {
         let path = config_path();
         if let Some(p) = path {
             assert_ne!(
-                p.components().next().map(|c| c.as_os_str().to_string_lossy().to_string()),
+                p.components()
+                    .next()
+                    .map(|c| c.as_os_str().to_string_lossy().to_string()),
                 Some(".".to_string()),
                 "config_path must not use '.' as base directory"
             );
