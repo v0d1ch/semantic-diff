@@ -8,6 +8,10 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] View full file shortcut
 - [x] Sidebar display with nested folders
 - [x] Search through file in the diff panel
+- [x] Codex support 
+- [ ] Display spinner while AI is reviewing the code
+- [ ] Introduce questions about AI review
+- [ ] Introduce Mermaid support for AI results
 - [ ] Browse the local file in system editor
 - [ ] Post comment using gh tool directly from the cli
 
