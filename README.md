@@ -9,6 +9,7 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] Sidebar display with nested folders
 - [x] Search through file in the diff panel
 - [x] Codex support 
+- [ ] Support larger diffs for AI grouping: make input limits and timeouts configurable, preserve more hunk context, and report omitted content or incomplete grouping.
 - [ ] Display spinner while AI is reviewing the code
 - [ ] Introduce questions about AI review
 - [ ] Introduce Mermaid support for AI results
