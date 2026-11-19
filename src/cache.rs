@@ -11,6 +11,7 @@ pub struct AiCacheKey {
     pub backend: Option<crate::grouper::llm::LlmBackend>,
     pub model: String,
     pub reasoning_effort: Option<String>,
+    pub max_summary_bytes: usize
 }
 
 impl AiCacheKey {
@@ -284,6 +285,7 @@ mod tests {
             backend: Some(crate::grouper::llm::LlmBackend::Codex),
             model: "test-model".into(),
             reasoning_effort: Some("high".into()),
+            max_summary_bytes: 8000
         }
     }
 
@@ -308,7 +310,9 @@ mod tests {
         model.model = "another-model".into();
         let mut backend = ai.clone();
         backend.backend = Some(crate::grouper::llm::LlmBackend::Claude);
-        for different in [changed, model, backend] {
+        let mut limit = ai.clone();
+        limit.max_summary_bytes = 16000;
+        for different in [changed, model, backend, limit] {
             assert!(load_from_path(&path, 123, &different).is_none());
             assert!(load_incremental_from_path(&path, "head", &different).is_none());
             assert_ne!(ai.hash_content(42), different.hash_content(42));

@@ -95,10 +95,8 @@ pub enum GroupingStatus {
 ///     - old_call();
 ///     + new_call();
 /// ```
-/// Max total characters for the summaries prompt to keep LLM response fast.
-const MAX_SUMMARY_CHARS: usize = 8000;
 
-pub fn hunk_summaries(diff_data: &DiffData) -> String {
+pub fn hunk_summaries(diff_data: &DiffData, max_summary_bytes: usize) -> String {
     let mut out = String::new();
     for f in &diff_data.files {
         let path = f.target_file.trim_start_matches("b/");
@@ -109,13 +107,13 @@ pub fn hunk_summaries(diff_data: &DiffData) -> String {
         ));
 
         // For untracked files, use structural sampling instead of hunk-by-hunk
-        if f.is_untracked && out.len() < MAX_SUMMARY_CHARS {
+        if f.is_untracked && out.len() < max_summary_bytes {
             out.push_str(&summarize_untracked_file(f));
         } else {
-            append_hunk_samples(&mut out, f);
+            append_hunk_samples(&mut out, f, max_summary_bytes);
         }
 
-        if out.len() >= MAX_SUMMARY_CHARS {
+        if out.len() >= max_summary_bytes {
             out.push_str("... (remaining files omitted for brevity)\n");
             break;
         }
@@ -139,11 +137,11 @@ fn file_status(f: &crate::diff::DiffFile) -> String {
 }
 
 /// Append standard hunk-by-hunk samples (up to 4 changed lines each) to the output.
-fn append_hunk_samples(out: &mut String, f: &crate::diff::DiffFile) {
+fn append_hunk_samples(out: &mut String, f: &crate::diff::DiffFile, max_summary_bytes: usize) {
     for (hi, hunk) in f.hunks.iter().enumerate() {
         out.push_str(&format!("  HUNK {}: {}\n", hi, hunk.header));
 
-        if out.len() < MAX_SUMMARY_CHARS {
+        if out.len() < max_summary_bytes {
             let mut shown = 0;
             for line in &hunk.lines {
                 if shown >= 4 {
@@ -327,6 +325,7 @@ pub fn incremental_hunk_summaries(
     diff_data: &DiffData,
     delta: &DiffDelta,
     existing_groups: &[SemanticGroup],
+    max_summary_bytes: usize
 ) -> String {
     let mut out = String::new();
 
@@ -370,13 +369,13 @@ pub fn incremental_hunk_summaries(
             path, status, f.added_count, f.removed_count
         ));
 
-        if f.is_untracked && out.len() < MAX_SUMMARY_CHARS {
+        if f.is_untracked && out.len() < max_summary_bytes {
             out.push_str(&summarize_untracked_file(f));
         } else {
-            append_hunk_samples(&mut out, f);
+            append_hunk_samples(&mut out, f, max_summary_bytes);
         }
 
-        if out.len() >= MAX_SUMMARY_CHARS {
+        if out.len() >= max_summary_bytes {
             out.push_str("... (remaining files omitted for brevity)\n");
             break;
         }

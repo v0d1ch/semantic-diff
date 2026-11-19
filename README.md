@@ -13,9 +13,10 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] Codex support 
 - [ ] Add mouse support
 - [ ] Performance, architecture and compilation advancements
-- [ ] Support larger diffs for AI grouping: make input limits and timeouts configurable, preserve more hunk context, and report omitted content or incomplete grouping.
+- [x] Support larger diffs for AI grouping: make input limits and timeouts configurable, preserve more hunk context, and report omitted content or incomplete grouping.
 - [ ] Display spinner while AI is reviewing the code
 - [ ] Introduce questions about AI review
+- [ ] Do not load AI review on start
 - [ ] Introduce Mermaid support for AI results
 - [ ] Browse the local file in system editor
 - [ ] Post comment using gh tool directly from the cli
@@ -155,6 +156,10 @@ On first run, a default config is created at `~/.config/semantic-diff.json`:
 
 ```jsonc
 {
+  // AI grouping summary threshold in bytes; must be greater than zero.
+  // Defaults to 8000. Output may exceed this threshold.
+  "max_summary_bytes": 8000,
+
   // Which AI CLI to prefer: "codex", "claude", or "copilot"
   // Falls back to another installed CLI; default order: codex > claude > copilot
   // "preferred-ai-cli": "claude",
@@ -177,12 +182,19 @@ On first run, a default config is created at `~/.config/semantic-diff.json`:
 }
 ```
 
+`max_summary_bytes` sets the stopping threshold for full and incremental AI
+grouping summaries. It defaults to 8000 when omitted or set to `null`. This is
+not a strict byte cap: content is appended before some size checks, so summaries
+can exceed the threshold. It does not limit the entire AI prompt. Zero is invalid;
+the app logs a warning and falls back to the entire default configuration.
+
 Codex model and reasoning effort are independent options. Omit either to use
 its Codex default. Effort levels depend on your model and CLI version; the app
 passes the configured value directly to Codex. See the [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 Restart `semantic-diff` after changing configuration. Grouping and review caches
-include the selected backend, model, and effort, so changing these settings
-regenerates results. Older caches without settings are regenerated once.
+include the selected backend, model, effort, and summary threshold, so changing
+these settings regenerates results. Older caches without the required settings
+are regenerated once.
 
 ### Copying AI reviews
 

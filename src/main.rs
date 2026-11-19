@@ -184,7 +184,7 @@ async fn main() -> Result<()> {
                     used_incremental = true;
                 } else {
                     // New/modified files — spawn incremental grouping
-                    let summaries = grouper::incremental_hunk_summaries(&app.diff_data, &delta, &prev_groups);
+                    let summaries = grouper::incremental_hunk_summaries(&app.diff_data, &delta, &prev_groups, app.max_summary_bytes);
                     let model = app.llm_model.clone();
                     let reasoning_effort = app.llm_reasoning_effort.clone();
                     let head_clone = head.clone();
@@ -220,7 +220,7 @@ async fn main() -> Result<()> {
 
         if !used_incremental {
             // Full re-group: no incremental state available
-            let summaries = grouper::hunk_summaries(&app.diff_data);
+            let summaries = grouper::hunk_summaries(&app.diff_data, app.max_summary_bytes);
             let model = app.llm_model.clone();
             let reasoning_effort = app.llm_reasoning_effort.clone();
             let tx2 = tx.clone();

@@ -625,7 +625,7 @@ fn test_incremental_summaries_includes_context() {
         unchanged_files: vec!["src/auth.rs".to_string(), "src/middleware.rs".to_string()],
     };
 
-    let output = incremental_hunk_summaries(&data, &delta, &existing);
+    let output = incremental_hunk_summaries(&data, &delta, &existing, 8000);
 
     assert!(
         output.contains("EXISTING GROUPS"),
@@ -652,7 +652,7 @@ fn test_incremental_summaries_only_delta_files() {
         unchanged_files: vec!["src/auth.rs".to_string(), "src/middleware.rs".to_string()],
     };
 
-    let output = incremental_hunk_summaries(&data, &delta, &existing);
+    let output = incremental_hunk_summaries(&data, &delta, &existing, 8000);
 
     assert!(
         output.contains("src/router.rs"),
@@ -677,7 +677,7 @@ fn test_incremental_summaries_skips_unchanged() {
         ],
     )];
 
-    let output = incremental_hunk_summaries(&data, &delta, &existing);
+    let output = incremental_hunk_summaries(&data, &delta, &existing, 8000);
 
     // middleware.rs is unchanged — it must not appear in FILE: sections
     // (it may appear in the EXISTING GROUPS context list, so we check for "FILE: src/middleware.rs")
@@ -691,6 +691,36 @@ fn test_incremental_summaries_skips_unchanged() {
     assert!(
         output.contains("FILE: src/auth.rs"),
         "modified file auth.rs should appear as a FILE: entry"
+    );
+}
+
+#[test]
+fn test_incremental_summaries_respects_configured_threshold() {
+    // Arrange: reuse a diff containing three files.
+    let data = diff::parse(DIFF_V2);
+
+    let delta = semantic_diff::grouper::DiffDelta {
+        new_files: vec!["src/router.rs".to_string()],
+        modified_files: vec![
+            "src/auth.rs".to_string(),
+            "src/middleware.rs".to_string(),
+        ],
+        removed_files: vec![],
+        unchanged_files: vec![],
+    };
+
+    // Act: summarize the same changes with different limits.
+    let small = incremental_hunk_summaries(&data, &delta, &[], 100);
+    let large = incremental_hunk_summaries(&data, &delta, &[], 8000);
+
+    // Assert: only the larger budget reaches the last file.
+    assert!(
+        !small.contains("FILE: src/router.rs"),
+        "the small budget should omit router.rs"
+    );
+    assert!(
+        large.contains("FILE: src/router.rs"),
+        "the large budget should include router.rs"
     );
 }
 

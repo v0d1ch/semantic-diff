@@ -231,6 +231,7 @@ pub struct App {
     pub review_scroll: usize,
     pub review_source: ReviewSource,
     pub sidebar_visible: bool,
+    pub max_summary_bytes: usize,
 }
 
 impl App {
@@ -297,6 +298,7 @@ impl App {
             review_scroll: 0,
             review_source: crate::review::detect_review_skill(),
             sidebar_visible: true,
+            max_summary_bytes: config.max_summary_bytes
         }
     }
 
@@ -419,6 +421,7 @@ impl App {
                             &self.diff_data,
                             &delta,
                             existing,
+                            self.max_summary_bytes
                         );
                         tracing::info!(
                             new = delta.new_files.len(),
@@ -447,7 +450,7 @@ impl App {
                         handle.abort();
                     }
                     self.grouping_status = GroupingStatus::Loading;
-                    let summaries = crate::grouper::hunk_summaries(&self.diff_data);
+                    let summaries = crate::grouper::hunk_summaries(&self.diff_data, self.max_summary_bytes);
                     let file_hashes = crate::grouper::compute_all_file_hashes(&self.diff_data);
                     Some(Command::SpawnGrouping {
                         backend,
@@ -878,6 +881,7 @@ impl App {
             backend: self.llm_backend,
             model: self.llm_model.clone(),
             reasoning_effort: self.llm_reasoning_effort.clone(),
+            max_summary_bytes: self.max_summary_bytes,
         }
     }
 
