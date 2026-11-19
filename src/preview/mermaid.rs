@@ -56,6 +56,26 @@ pub enum ImageProtocol {
     Kitty,
 }
 
+fn terminal_protocol(
+    term_program: &str,
+    ghostty: bool,
+) -> Option<ImageProtocol> {
+    let name = term_program.to_ascii_lowercase();
+
+    if name.contains("iterm") {
+        Some(ImageProtocol::Iterm2)
+    } else if ghostty
+        || name.contains("kitty")
+        || name.contains("wezterm")
+        || name == "rex"
+    {
+        Some(ImageProtocol::Kitty)
+    } else {
+        None
+    }
+}
+
+
 /// Detect whether the current terminal environment supports inline image rendering.
 ///
 /// Checks are ordered: multiplexer detection first (these strip graphics escape
@@ -65,46 +85,31 @@ pub enum ImageProtocol {
 /// - `TMUX` is only set inside a tmux session (not just because tmux is installed)
 /// - `STY` is only set inside a screen session
 pub fn detect_image_support() -> ImageSupport {
-    // 1. Check for active multiplexer session — these strip graphics escape sequences.
-    if std::env::var("TMUX").is_ok() {
-        tracing::info!("Inside tmux session — mermaid images disabled (no graphics passthrough)");
-        return ImageSupport::Multiplexer;
-    }
-    if std::env::var("STY").is_ok() {
-        tracing::info!("Inside screen session — mermaid images disabled");
+    if std::env::var("TMUX").is_ok() || std::env::var("STY").is_ok() {
+        tracing::info!("Inside tmux or screen — Mermaid images disabled");
         return ImageSupport::Multiplexer;
     }
 
-    // 2. Check for terminals known to support inline images
-    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default().to_lowercase();
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
     let ghostty = std::env::var("GHOSTTY_RESOURCES_DIR").is_ok();
-    let supported_terminal = ghostty
-        || term_program.contains("iterm")
-        || term_program.contains("kitty")
-        || term_program.contains("wezterm");
 
-    if !supported_terminal {
-        tracing::info!(term_program = %term_program, "Unknown terminal — mermaid images disabled");
-        return ImageSupport::Multiplexer;
-    }
+    let protocol = match terminal_protocol(&term_program, ghostty) {
+        Some(protocol) => protocol,
+        None => {
+            tracing::info!(
+                term_program = %term_program,
+                "Unknown terminal — Mermaid images disabled"
+            );
+            return ImageSupport::Multiplexer;
+        }
+    };
 
-    // 3. Check if mmdc is available (only matters if terminal supports images)
     if which::which("mmdc").is_err() {
-        tracing::info!("mmdc not found — mermaid diagrams will show as source code");
+        tracing::info!("mmdc not found — Mermaid diagrams will show as source");
         return ImageSupport::NoMmdc;
     }
 
-    // 4. Determine protocol from terminal type
-    let protocol = if term_program.contains("iterm") {
-        ImageProtocol::Iterm2
-    } else if ghostty || term_program.contains("kitty") || term_program.contains("wezterm") {
-        ImageProtocol::Kitty
-    } else {
-        tracing::info!(term_program = %term_program, "No known image protocol");
-        return ImageSupport::Multiplexer;
-    };
-
-    tracing::info!(term_program = %term_program, ?protocol, "Image rendering enabled");
+    tracing::info!(?protocol, "Image rendering enabled");
     ImageSupport::Supported(protocol)
 }
 
@@ -278,4 +283,26 @@ fn find_cache_dir() -> Option<PathBuf> {
     }
     let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Some(PathBuf::from(git_dir).join("semantic-diff-cache").join("mermaid"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rex_uses_kitty_graphics() {
+        assert_eq!(
+            terminal_protocol("rex", false),
+            Some(ImageProtocol::Kitty)
+        );
+        assert_eq!(
+            terminal_protocol("Rex", false),
+            Some(ImageProtocol::Kitty)
+        );
+    }
+
+    #[test]
+    fn unrelated_terminal_name_is_not_recognized() {
+        assert_eq!(terminal_protocol("not-rex", false), None);
+    }
 }
