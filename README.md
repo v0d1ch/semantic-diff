@@ -13,7 +13,8 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] Codex support 
 - [ ] Add mouse support
 - [ ] Performance, architecture and compilation advancements
-- [x] Support larger diffs for AI grouping: make input limits and timeouts configurable, preserve more hunk context, and report omitted content or incomplete grouping.
+- [x] Make the AI grouping summary threshold configurable
+- [ ] Support larger diffs: configurable timeouts, richer hunk context, and better reporting of omitted content or incomplete grouping
 - [ ] Display spinner while AI is reviewing the code
 - [ ] Introduce questions about AI review
 - [ ] Do not load AI review on start
