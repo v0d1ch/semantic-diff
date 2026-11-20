@@ -327,7 +327,7 @@ impl App {
             active_review_group: None,
             review_notice: None,
             review_scroll: 0,
-            review_source: crate::review::detect_review_skill(),
+            review_source: crate::review::detect_review_file(),
             sidebar_visible: true,
             max_summary_bytes: config.max_summary_bytes,
         }
@@ -836,7 +836,7 @@ impl App {
     pub fn review_content_hash(&self, group: &SemanticGroup) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        "review-content-v2".hash(&mut hasher);
+        "review-content-v3".hash(&mut hasher);
         crate::review::group_content_hash(group).hash(&mut hasher);
         group.description.hash(&mut hasher);
         let hashes = crate::grouper::compute_all_file_hashes(&self.diff_data);
@@ -879,13 +879,19 @@ impl App {
                     ) => continue,
                     Some(SectionState::Error(_)) | None => {}
                 }
-                review.sections.insert(section, SectionState::Loading);
-                let prompt = crate::review::llm::build_review_prompt(
+                let prompt = match crate::review::llm::build_review_prompt(
                     section,
                     group,
                     &self.diff_data,
                     &review_source,
-                );
+                ) {
+                    Ok(prompt) => prompt,
+                    Err(error) => {
+                        review.sections.insert(section, SectionState::Error(error));
+                        continue;
+                    }
+                };
+                review.sections.insert(section, SectionState::Loading);
                 all_cmds.push(Command::SpawnReviewSection {
                     backend,
                     model: model.clone(),
@@ -2141,6 +2147,12 @@ mod view_cache_tests {
     #[test]
     fn review_commands_carry_effort_and_cache_identity_changes() {
         let mut app = app();
+        let instructions = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(instructions.path(), "Explain the requested section.").unwrap();
+        app.review_source = ReviewSource::Skill {
+            name: "fixture".into(),
+            path: instructions.path().to_owned(),
+        };
         app.llm_backend = Some(LlmBackend::Codex);
         app.llm_model = "test-model-for-effort".into();
         app.llm_reasoning_effort = Some("high".into());
@@ -2186,7 +2198,7 @@ mod view_cache_tests {
         app.review_scroll = 100;
         app.review_cache.insert(GroupReview {
             content_hash: hash,
-            source: ReviewSource::BuiltIn,
+            source: ReviewSource::Missing,
             sections: HashMap::from([
                 (
                     ReviewSection::Why,

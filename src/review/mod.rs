@@ -47,10 +47,11 @@ impl SectionState {
 /// Tracks which review source was used.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ReviewSource {
-    /// A review SKILL was discovered and injected into the VERDICT prompt.
+    /// A review instruction file was discovered and is used for every section.
     Skill { name: String, path: PathBuf },
-    /// No SKILL found; used built-in generic reviewer.
-    BuiltIn,
+    /// No instruction file was discovered. Reviews require a file at runtime.
+    #[serde(alias = "BuiltIn")]
+    Missing,
 }
 
 /// Aggregate review state for one semantic group.
@@ -158,50 +159,17 @@ pub fn group_content_hash(group: &crate::grouper::SemanticGroup) -> u64 {
     hasher.finish()
 }
 
-/// Discover a review SKILL by scanning local then global paths.
-/// Returns the first match whose filename contains "review" (case-insensitive).
-pub fn detect_review_skill() -> ReviewSource {
-    // 1. local REVIEW.md file
-    let file_name = "review.md";
-    let review_file_path = PathBuf::from(file_name);
-
-    if review_file_path.is_file() {
-        return ReviewSource::Skill {
-            name: file_name.to_string(),
-            path: review_file_path,
-        };
-    }
-
-    // 2. Codebase-level: .claude/skills/
-    if let Some(found) = scan_skills_dir(".claude/skills") {
-        return found;
-    }
-    // 3. Global: ~/.claude/skills/
-    if let Some(home) = dirs::home_dir() {
-        let global = home.join(".claude").join("skills");
-        if let Some(found) = scan_skills_dir(global) {
-            return found;
+/// Discover only review.md in the current working directory.
+pub fn detect_review_file() -> ReviewSource {
+    let path = PathBuf::from("review.md");
+    if path.is_file() {
+        ReviewSource::Skill {
+            name: "review.md".to_owned(),
+            path,
         }
+    } else {
+        ReviewSource::Missing
     }
-    ReviewSource::BuiltIn
-}
-
-fn scan_skills_dir(dir: impl AsRef<std::path::Path>) -> Option<ReviewSource> {
-    let dir = dir.as_ref();
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            let name = path.file_stem()?.to_string_lossy().to_string();
-            if name.to_lowercase().contains("review") {
-                return Some(ReviewSource::Skill {
-                    name,
-                    path: path.clone(),
-                });
-            }
-        }
-    }
-    None
 }
 
 /// Disk-cached review entry. Only stores completed section content.
@@ -287,13 +255,12 @@ pub fn load_review_from_disk(
     let cached: CachedReview = serde_json::from_str(&data).ok()?;
 
     match (&cached.source, current_source) {
-        (ReviewSource::BuiltIn, ReviewSource::BuiltIn) => {}
+        (ReviewSource::Missing, _) | (_, ReviewSource::Missing) => return None,
         (ReviewSource::Skill { path: p1, .. }, ReviewSource::Skill { path: p2, .. }) => {
             if p1 != p2 {
                 return None;
             }
         }
-        _ => return None,
     }
 
     let mut sections = HashMap::new();

@@ -53,6 +53,11 @@ impl Repo {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        std::fs::write(
+            directory.path().join("review.md"),
+            "Explain the requested section.",
+        )
+        .unwrap();
         std::env::set_current_dir(directory.path()).unwrap();
         Self {
             previous,
@@ -85,7 +90,10 @@ fn app(raw: &str) -> App {
     app.llm_backend = Some(LlmBackend::Codex);
     app.llm_model = "manual-ai-test".into();
     app.llm_reasoning_effort = None;
-    app.review_source = ReviewSource::BuiltIn;
+    app.review_source = ReviewSource::Skill {
+        name: "fixture".into(),
+        path: std::env::current_dir().unwrap().join("review.md"),
+    };
     app
 }
 
@@ -141,6 +149,51 @@ fn save_groups(app: &App, raw: &str, groups: &[SemanticGroup]) {
         &grouper::compute_all_file_hashes(&app.diff_data),
         &app.ai_cache_key(),
     );
+}
+
+#[test]
+fn review_discovery_only_uses_local_review_md() {
+    let _repo = Repo::new();
+    assert!(matches!(
+        review::detect_review_file(),
+        ReviewSource::Skill { path, .. } if path == PathBuf::from("review.md")
+    ));
+
+    for directory in [".claude/skills", ".codex/skills", ".agents/skills"] {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(
+            PathBuf::from(directory).join("rust-review.md"),
+            "Should not be loaded.",
+        )
+        .unwrap();
+    }
+    std::fs::remove_file("review.md").unwrap();
+    assert!(matches!(review::detect_review_file(), ReviewSource::Missing));
+}
+
+#[test]
+fn unreadable_review_instructions_fail_sections_without_spawning_ai() {
+    let _repo = Repo::new();
+    let mut app = app(&raw("test.rs", "new"));
+    let group = group(&["test.rs"]);
+    let hash = app.review_content_hash(&group);
+    app.semantic_groups = Some(vec![group]);
+    app.review_source = ReviewSource::Skill {
+        name: "missing review".into(),
+        path: PathBuf::from("missing-review.md"),
+    };
+
+    assert!(app.spawn_all_reviews().is_none());
+    let review = app.review_cache.get(&hash).unwrap();
+    for section in ReviewSection::all() {
+        assert!(matches!(
+            review.sections.get(&section),
+            Some(SectionState::Error(error)) if error.contains("missing-review.md")
+        ));
+    }
+
+    std::fs::write("missing-review.md", "Explain the requested section.").unwrap();
+    assert_eq!(reviews(app.spawn_all_reviews()), 4);
 }
 
 #[test]
@@ -298,7 +351,7 @@ fn review_cache_reuses_results_but_invalidates_when_code_changes() {
             .into_iter()
             .map(|section| (section, SectionState::Ready("cached".into())))
             .collect(),
-        source: ReviewSource::BuiltIn,
+        source: app.review_source.clone(),
     });
     assert!(request(&mut app, &raw).is_none());
     assert!(matches!(

@@ -91,13 +91,13 @@ fn render_banner(source: &ReviewSource, lines: &mut Vec<Line>, theme: &crate::th
                 Style::default().fg(theme.help_dismiss_fg),
             )));
         }
-        ReviewSource::BuiltIn => {
+        ReviewSource::Missing => {
             lines.push(Line::from(Span::styled(
-                " Reviewed with: built-in generic reviewer",
+                " No review instruction file found",
                 Style::default().fg(theme.help_dismiss_fg),
             )));
             lines.push(Line::from(Span::styled(
-                " Tip: Create a review SKILL in .claude/skills/ or ~/.claude/skills/",
+                " Tip: Add review.md to the working directory and restart the app",
                 Style::default().fg(theme.help_dismiss_fg),
             )));
         }

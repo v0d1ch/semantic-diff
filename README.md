@@ -1,6 +1,6 @@
 # semantic-diff cli [FORK]
 
-This repo contains the cli app for semantic-diffing packed with new features I personally would like to have when reviewing some code.
+This repo contains the cli app for semantic-diffing packed with new features useful when reviewing code.
 
 List of features I plan to add to semantic-diff in no particular order
 
@@ -16,6 +16,7 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] Add rex terminal support for mermaid diagrams in .md previews 
 - [x] Do not load AI review on start
 - [x] Add support for the local review.md
+- [ ] Add cli option for review file path
 - [ ] Add mouse support
 - [ ] Performance, architecture and compilation advancements
 - [ ] Support larger diffs: configurable timeouts, richer hunk context, and better reporting of omitted content or incomplete grouping
@@ -199,6 +200,21 @@ Restart `semantic-diff` after changing configuration. Grouping and review caches
 include the selected backend, model, effort, and summary threshold, so changing
 these settings regenerates results. Older caches without the required settings
 are regenerated once.
+
+### Customizing AI reviews
+
+The app loads only `review.md` from the directory where you start `semantic-diff`.
+It supplies the complete instructions for WHY, WHAT, HOW, and VERDICT. No parent,
+home, Claude, or Codex skill directories are searched, and no review instructions
+are embedded in the binary. The discovered file is read at runtime for all four
+sections. Missing, unreadable, or empty files produce review errors; normal diff
+viewing remains available.
+
+Keep the section selectors and response formats documented in `review.md`, including
+HOW's exact `SKIP` response. Rust code attaches the section selector and group/diff
+data; review policy and output instructions live in Markdown. After editing an
+active instruction file, use `R` to regenerate a group's cached review. Restart the
+app after adding a previously missing `review.md` or changing the working directory.
 
 ### Copying AI reviews
 

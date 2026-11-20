@@ -5,9 +5,7 @@ use crate::grouper::SemanticGroup;
 
 fn build_shared_context(group: &SemanticGroup, diff_data: &DiffData) -> String {
     let mut ctx = format!(
-        "You are reviewing a group of related code changes called \"{}\".\n\
-         Group description: {}\n\n\
-         The changes in this group:\n",
+        "GROUP: {}\nDESCRIPTION: {}\n\nDIFF:\n",
         group.label, group.description
     );
 
@@ -51,63 +49,26 @@ fn build_section_prompt(
     section: ReviewSection,
     shared_context: &str,
     review_source: &ReviewSource,
-) -> String {
-    let section_instruction = match section {
-        ReviewSection::Why => {
-            "Analyze the PURPOSE of these changes. Return a markdown list ranked by importance.\n\
-             Each item: one sentence explaining why this change was made.\n\
-             Focus on intent, not mechanics. Max 5 items.\n\
-             Return ONLY markdown, no code fences around the whole response."
-                .to_string()
-        }
-        ReviewSection::What => {
-            "Describe the BEHAVIORAL CHANGES as a markdown table with columns:\n\
-             | Component | Before | After | Risk |\n\n\
-             Focus on observable behavior differences, not code structure.\n\
-             Risk is one of: none, low, medium, high.\n\
-             Omit trivial changes (formatting, imports). Max 10 rows.\n\
-             Return ONLY the markdown table."
-                .to_string()
-        }
-        ReviewSection::How => {
-            "If these changes involve complex control flow, state transitions, or\n\
-             architectural patterns, return a mermaid diagram showing the key logic.\n\
-             Use flowchart TD or sequenceDiagram as appropriate.\n\n\
-             If the changes are straightforward (simple CRUD, config changes, etc.),\n\
-             return exactly the text: SKIP\n\n\
-             Return ONLY the mermaid code block OR the word SKIP."
-                .to_string()
-        }
-        ReviewSection::Verdict => {
-            let skill_preamble = match review_source {
-                ReviewSource::Skill { path, .. } => {
-                    std::fs::read_to_string(path).unwrap_or_default()
-                }
-                ReviewSource::BuiltIn => String::new(),
-            };
-
+) -> Result<String, String> {
+    let instructions = match review_source {
+        ReviewSource::Skill { path, .. } => std::fs::read_to_string(path).map_err(|error| {
             format!(
-                "{}\n\
-                 Review these changes for HIGH-SEVERITY issues only. Ignore:\n\
-                 - Style/formatting opinions\n\
-                 - Minor naming suggestions\n\
-                 - Test coverage gaps (unless security-relevant)\n\n\
-                 Focus on:\n\
-                 - Logic errors, off-by-one, null/None handling\n\
-                 - Security: injection, auth bypass, secrets exposure\n\
-                 - Concurrency: race conditions, deadlocks\n\
-                 - Data: schema breaks, migration risks\n\n\
-                 If no high-severity issues found, say \"No high-severity issues detected.\"\n\
-                 Return markdown with ## headings per issue found. Max 3 issues.\n\
-                 Prefix each issue heading with a bug number like RV-1, RV-2, etc.\n\
-                 Example: ## RV-1: Potential null dereference in auth handler\n\
-                 This allows users to reference specific findings when asking their AI assistant to fix them.",
-                skill_preamble
+                "Could not read review instructions {}: {error}",
+                path.display()
             )
+        })?,
+        ReviewSource::Missing => {
+            return Err("No review instruction file found. Add review.md to the working directory and restart the app.".to_owned());
         }
     };
+    if instructions.trim().is_empty() {
+        return Err("Review instructions are empty".to_owned());
+    }
 
-    format!("{}\n\n{}", shared_context, section_instruction)
+    Ok(format!(
+        "{instructions}\n\nSECTION: {}\n\n{shared_context}",
+        section.label()
+    ))
 }
 
 /// Build the full prompt for a review section.
@@ -116,7 +77,7 @@ pub fn build_review_prompt(
     group: &SemanticGroup,
     diff_data: &DiffData,
     review_source: &ReviewSource,
-) -> String {
+) -> Result<String, String> {
     let shared = build_shared_context(group, diff_data);
     build_section_prompt(section, &shared, review_source)
 }
@@ -138,5 +99,64 @@ pub async fn invoke_review_section(
         Ok(Ok(response)) => Ok(response),
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("LLM timed out after 120s".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_source_is_an_error_for_every_section() {
+        for section in ReviewSection::all() {
+            let error = build_section_prompt(section, "GROUP: example", &ReviewSource::Missing)
+                .unwrap_err();
+            assert!(error.contains("No review instruction file found"));
+        }
+    }
+
+    #[test]
+    fn every_section_reads_the_supplied_path_at_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom-policy.txt");
+        std::fs::write(&path, "Review allocation costs and explain tradeoffs.").unwrap();
+        let source = ReviewSource::Skill {
+            name: "review.md".into(),
+            path: path.clone(),
+        };
+        for section in ReviewSection::all() {
+            let prompt = build_section_prompt(section, "GROUP: example", &source).unwrap();
+            assert_eq!(
+                prompt,
+                format!(
+                    "Review allocation costs and explain tradeoffs.\n\nSECTION: {}\n\nGROUP: example",
+                    section.label()
+                )
+            );
+        }
+        std::fs::write(path, "Updated instructions.").unwrap();
+        let prompt =
+            build_section_prompt(ReviewSection::Verdict, "GROUP: example", &source).unwrap();
+        assert!(prompt.starts_with("Updated instructions.\n"));
+        assert!(!prompt.contains("Review allocation costs"));
+    }
+
+    #[test]
+    fn unreadable_and_empty_instructions_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("review.md");
+        let source = ReviewSource::Skill {
+            name: "review.md".into(),
+            path: path.clone(),
+        };
+        let error = build_section_prompt(ReviewSection::Verdict, "", &source).unwrap_err();
+        assert!(error.contains("Could not read review instructions"));
+        assert!(error.contains(&path.display().to_string()));
+
+        std::fs::write(path, " \n\t").unwrap();
+        assert_eq!(
+            build_section_prompt(ReviewSection::Verdict, "", &source).unwrap_err(),
+            "Review instructions are empty"
+        );
     }
 }
