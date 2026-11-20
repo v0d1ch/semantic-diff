@@ -30,13 +30,12 @@ pub fn draw(app: &App, frame: &mut Frame) -> Vec<preview_view::PendingImage> {
         } else {
             Constraint::Max(40)
         };
-    
+
         let horizontal =
-            Layout::horizontal([sidebar_width, Constraint::Min(40)])
-                .split(vertical[0]);
-    
+            Layout::horizontal([sidebar_width, Constraint::Min(40)]).split(vertical[0]);
+
         file_tree::render_tree(app, frame, horizontal[0]);
-    
+
         horizontal[1]
     } else {
         vertical[0]
@@ -75,29 +74,41 @@ pub fn draw(app: &App, frame: &mut Frame) -> Vec<preview_view::PendingImage> {
 /// Render the help overlay centered on screen.
 fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
     let shortcuts = vec![
-        ("Navigation", vec![
-            ("j/k, ↑/↓", "Move up/down"),
-            ("g/G", "Jump to top/bottom"),
-            ("Ctrl-d/u", "Half-page down/up"),
-            ("Tab", "Switch sidebar/diff focus"),
-        ]),
-        ("Actions", vec![
-            ("a", "AI: group and review current diff"),
-            ("Enter", "Sidebar: select file/group | Diff: toggle collapse"),
-            ("p", "Toggle markdown preview (.md files)"),
-            ("/", "Sidebar: filter files | Diff: search text"),
-            ("n/N", "Next/prev search match"),
-            (",", "Settings"),
-            ("Esc", "Clear filter / quit"),
-            ("q", "Quit"),
-            ("b", "Show/hide sidebar"),
-            ("f", "Display full file"),
-        ]),
-        ("Review (on group)", vec![
-            ("R", "Force-refresh review"),
-            ("y", "Copy group review as Markdown"),
-            ("Esc", "Close review pane"),
-        ]),
+        (
+            "Navigation",
+            vec![
+                ("j/k, ↑/↓", "Move up/down"),
+                ("g/G", "Jump to top/bottom"),
+                ("Ctrl-d/u", "Half-page down/up"),
+                ("Tab", "Switch sidebar/diff focus"),
+            ],
+        ),
+        (
+            "Actions",
+            vec![
+                ("a", "AI: group and review current diff"),
+                (
+                    "Enter",
+                    "Sidebar: select file/group | Diff: toggle collapse",
+                ),
+                ("p", "Toggle markdown preview (.md files)"),
+                ("/", "Sidebar: filter files | Diff: search text"),
+                ("n/N", "Next/prev search match"),
+                (",", "Settings"),
+                ("Esc", "Clear filter / quit"),
+                ("q", "Quit"),
+                ("b", "Show/hide sidebar"),
+                ("f", "Display full file"),
+            ],
+        ),
+        (
+            "Review (on group)",
+            vec![
+                ("R", "Force-refresh review"),
+                ("y", "Copy group review as Markdown"),
+                ("Esc", "Close review pane"),
+            ],
+        ),
     ];
 
     let mut lines: Vec<Line> = vec![Line::raw("")];
@@ -126,7 +137,16 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
         Style::default().fg(theme.help_dismiss_fg),
     )));
 
-    let content_width = lines.iter().map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>()).max().unwrap_or(0) as u16;
+    let content_width = lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0) as u16;
     let height = (lines.len() + 2).min(area.height as usize) as u16;
     let width = (content_width + 4).min(area.width.saturating_sub(4)); // +4 for borders + padding
     let x = (area.width.saturating_sub(width)) / 2;
@@ -178,7 +198,16 @@ fn render_settings_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
         Style::default().fg(theme.help_dismiss_fg),
     )));
 
-    let content_width = lines.iter().map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>()).max().unwrap_or(0) as u16;
+    let content_width = lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0) as u16;
     let width = (content_width + 4).min(area.width.saturating_sub(4));
     let height = (lines.len() + 2).min(area.height as usize) as u16;
     let x = (area.width.saturating_sub(width)) / 2;
@@ -190,7 +219,9 @@ fn render_settings_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
         .title(" Settings ")
         .border_style(Style::default().fg(theme.help_section_fg))
         .style(Style::default().bg(theme.help_overlay_bg));
-    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, popup_area);
 }
 

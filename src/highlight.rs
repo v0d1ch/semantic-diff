@@ -63,7 +63,12 @@ impl HighlightCache {
     }
 
     /// Look up cached highlighted spans for a specific line.
-    pub fn get(&self, file_idx: usize, hunk_idx: usize, line_idx: usize) -> Option<&Vec<(Style, String)>> {
+    pub fn get(
+        &self,
+        file_idx: usize,
+        hunk_idx: usize,
+        line_idx: usize,
+    ) -> Option<&Vec<(Style, String)>> {
         self.cache.get(&(file_idx, hunk_idx, line_idx))
     }
 }

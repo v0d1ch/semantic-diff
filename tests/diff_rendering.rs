@@ -79,8 +79,14 @@ fn parse_known_diff_structure() {
         foo.target_file
     );
     assert_eq!(foo.hunks.len(), 2, "foo.rs should have 2 hunks");
-    assert!(foo.added_count >= 2, "foo.rs should have at least 2 added lines");
-    assert!(foo.removed_count >= 1, "foo.rs should have at least 1 removed line");
+    assert!(
+        foo.added_count >= 2,
+        "foo.rs should have at least 2 added lines"
+    );
+    assert!(
+        foo.removed_count >= 1,
+        "foo.rs should have at least 1 removed line"
+    );
 
     // Verify line types in first hunk
     let hunk0 = &foo.hunks[0];

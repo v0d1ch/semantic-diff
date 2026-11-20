@@ -103,9 +103,7 @@ mod signal_tests {
 
         // 5. Wait for the process to finish (it will exit due to no TTY)
         //    Use a timeout to avoid hanging
-        let _ = Command::new("kill")
-            .args([&pid.to_string()])
-            .status();
+        let _ = Command::new("kill").args([&pid.to_string()]).status();
         let output = child.wait_with_output().expect("wait for child");
 
         // 6. Check stderr for panic or signal-related crash
@@ -130,9 +128,7 @@ mod signal_tests {
 fn generate_large_diff_many_files(num_files: usize) -> String {
     let mut diff = String::with_capacity(num_files * 200);
     for i in 0..num_files {
-        diff.push_str(&format!(
-            "diff --git a/src/file_{i}.rs b/src/file_{i}.rs\n"
-        ));
+        diff.push_str(&format!("diff --git a/src/file_{i}.rs b/src/file_{i}.rs\n"));
         diff.push_str(&format!("--- a/src/file_{i}.rs\n"));
         diff.push_str(&format!("+++ b/src/file_{i}.rs\n"));
         diff.push_str("@@ -1,3 +1,4 @@\n");

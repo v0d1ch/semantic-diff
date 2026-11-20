@@ -91,11 +91,17 @@ fn toggle_preview_on_md_file() {
 
     // Press 'p' — should toggle to preview
     app.update(Message::KeyPress(key(KeyCode::Char('p'))));
-    assert!(app.preview_mode, "Should be in preview mode after pressing 'p'");
+    assert!(
+        app.preview_mode,
+        "Should be in preview mode after pressing 'p'"
+    );
 
     // Press 'p' again — should toggle back to raw
     app.update(Message::KeyPress(key(KeyCode::Char('p'))));
-    assert!(!app.preview_mode, "Should be back in raw mode after pressing 'p' again");
+    assert!(
+        !app.preview_mode,
+        "Should be back in raw mode after pressing 'p' again"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +115,10 @@ fn toggle_preview_noop_on_rs_file() {
 
     // Press 'p' on a .rs file — should NOT toggle
     app.update(Message::KeyPress(key(KeyCode::Char('p'))));
-    assert!(!app.preview_mode, "Preview should not toggle on non-.md files");
+    assert!(
+        !app.preview_mode,
+        "Preview should not toggle on non-.md files"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +136,11 @@ fn render_preview_mode_no_panic() {
     // Render in test backend — should not panic
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| { app.view(f); }).unwrap();
+    terminal
+        .draw(|f| {
+            app.view(f);
+        })
+        .unwrap();
 
     let buf = terminal.backend().buffer();
     let text = buffer_text(buf);
@@ -151,19 +164,17 @@ fn render_raw_mode_shows_diff() {
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| { app.view(f); }).unwrap();
+    terminal
+        .draw(|f| {
+            app.view(f);
+        })
+        .unwrap();
 
     let text = buffer_text(terminal.backend().buffer());
 
     // Raw mode should show the diff filename and @@ hunk headers
-    assert!(
-        text.contains("README.md"),
-        "Raw mode should show filename"
-    );
-    assert!(
-        text.contains("@@"),
-        "Raw mode should show hunk headers"
-    );
+    assert!(text.contains("README.md"), "Raw mode should show filename");
+    assert!(text.contains("@@"), "Raw mode should show hunk headers");
 }
 
 // ---------------------------------------------------------------------------
@@ -177,7 +188,11 @@ fn preview_shows_markdown_not_diff() {
 
     let backend = ratatui::backend::TestBackend::new(100, 40);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| { app.view(f); }).unwrap();
+    terminal
+        .draw(|f| {
+            app.view(f);
+        })
+        .unwrap();
 
     let text = buffer_text(terminal.backend().buffer());
 
@@ -200,7 +215,11 @@ fn footer_shows_raw_indicator() {
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| { app.view(f); }).unwrap();
+    terminal
+        .draw(|f| {
+            app.view(f);
+        })
+        .unwrap();
 
     let text = buffer_text(terminal.backend().buffer());
     assert!(
@@ -216,7 +235,11 @@ fn footer_shows_preview_indicator() {
 
     let backend = ratatui::backend::TestBackend::new(100, 30);
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
-    terminal.draw(|f| { app.view(f); }).unwrap();
+    terminal
+        .draw(|f| {
+            app.view(f);
+        })
+        .unwrap();
 
     let text = buffer_text(terminal.backend().buffer());
     assert!(
@@ -240,7 +263,10 @@ fn scroll_resets_on_preview_toggle() {
 
     // Toggle to preview — preview_scroll should be 0
     app.update(Message::KeyPress(key(KeyCode::Char('p'))));
-    assert_eq!(app.ui_state.preview_scroll, 0, "Preview scroll should reset on toggle");
+    assert_eq!(
+        app.ui_state.preview_scroll, 0,
+        "Preview scroll should reset on toggle"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +315,9 @@ fn mixed_diff_toggle_only_on_md() {
     // Find the lib.rs file header index
     let rs_idx = items.iter().position(|item| {
         if let semantic_diff::app::VisibleItem::FileHeader { file_idx } = item {
-            app.diff_data.files[*file_idx].target_file.contains("lib.rs")
+            app.diff_data.files[*file_idx]
+                .target_file
+                .contains("lib.rs")
         } else {
             false
         }
@@ -354,11 +382,17 @@ graph TD
     assert!(has_mermaid, "Should have mermaid block");
 
     // Count total lines in text blocks
-    let total_lines: usize = blocks.iter().map(|b| match b {
-        PreviewBlock::Text(lines) => lines.len(),
-        PreviewBlock::Mermaid(_) => 0,
-    }).sum();
-    assert!(total_lines > 10, "Complex markdown should produce many lines, got {total_lines}");
+    let total_lines: usize = blocks
+        .iter()
+        .map(|b| match b {
+            PreviewBlock::Text(lines) => lines.len(),
+            PreviewBlock::Mermaid(_) => 0,
+        })
+        .sum();
+    assert!(
+        total_lines > 10,
+        "Complex markdown should produce many lines, got {total_lines}"
+    );
 }
 
 // ---------------------------------------------------------------------------

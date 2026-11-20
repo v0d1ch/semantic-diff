@@ -33,8 +33,8 @@ pub fn render_diff(app: &App, frame: &mut Frame, area: Rect) {
         lines.push(line);
     }
 
-    let paragraph = ratatui::widgets::Paragraph::new(lines)
-        .wrap(ratatui::widgets::Wrap { trim: false });
+    let paragraph =
+        ratatui::widgets::Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 
@@ -63,10 +63,7 @@ pub(crate) fn render_item(app: &App, item: &VisibleItem, is_selected: bool) -> L
 /// When an active filter is set, highlights the matching portion of the filename.
 fn render_file_header(app: &App, file_idx: usize, sel_bg: Color) -> Line<'static> {
     let file = &app.displayed_diff().files[file_idx];
-    let is_collapsed = app
-        .ui_state
-        .collapsed
-        .contains(&NodeId::File(file_idx));
+    let is_collapsed = app.ui_state.collapsed.contains(&NodeId::File(file_idx));
     let indicator = if is_collapsed { ">" } else { "v" };
 
     let name = if file.is_rename {
@@ -85,12 +82,10 @@ fn render_file_header(app: &App, file_idx: usize, sel_bg: Color) -> Line<'static
         app.theme.file_header_bg
     };
 
-    let mut spans = vec![
-        Span::styled(
-            format!(" {indicator} "),
-            Style::default().fg(Color::Yellow).bg(header_bg),
-        ),
-    ];
+    let mut spans = vec![Span::styled(
+        format!(" {indicator} "),
+        Style::default().fg(Color::Yellow).bg(header_bg),
+    )];
 
     // Show [untracked] badge for untracked files
     if file.is_untracked {
@@ -170,12 +165,7 @@ fn render_file_header(app: &App, file_idx: usize, sel_bg: Color) -> Line<'static
 }
 
 /// Render a hunk header line with collapse indicator and @@ header.
-fn render_hunk_header(
-    app: &App,
-    file_idx: usize,
-    hunk_idx: usize,
-    sel_bg: Color,
-) -> Line<'static> {
+fn render_hunk_header(app: &App, file_idx: usize, hunk_idx: usize, sel_bg: Color) -> Line<'static> {
     let hunk = &app.displayed_diff().files[file_idx].hunks[hunk_idx];
     let is_collapsed = app
         .ui_state
@@ -231,10 +221,7 @@ fn render_diff_line(
             Style::default().fg(app.theme.gutter_fg).bg(final_bg),
         ),
         // +/- prefix
-        Span::styled(
-            format!("{prefix} "),
-            Style::default().fg(fg).bg(final_bg),
-        ),
+        Span::styled(format!("{prefix} "), Style::default().fg(fg).bg(final_bg)),
     ];
 
     // Render content: with inline diff segments if available, otherwise syntax highlighting
@@ -262,10 +249,17 @@ fn render_diff_line(
             };
             spans.push(Span::styled(
                 segment.text.clone(),
-                Style::default().fg(fg).bg(seg_bg).add_modifier(seg_modifier),
+                Style::default()
+                    .fg(fg)
+                    .bg(seg_bg)
+                    .add_modifier(seg_modifier),
             ));
         }
-    } else if let Some(highlighted) = app.highlight_cache.get(file_idx, hunk_idx, line_idx).filter(|_| !app.full_context_active()) {
+    } else if let Some(highlighted) = app
+        .highlight_cache
+        .get(file_idx, hunk_idx, line_idx)
+        .filter(|_| !app.full_context_active())
+    {
         // Syntax highlighting mode
         for (style, text) in highlighted {
             spans.push(Span::styled(text.clone(), style.bg(final_bg)));
@@ -281,7 +275,8 @@ fn render_diff_line(
     if let Some(pattern) = app.diff_search_pattern() {
         // Search the original content so a match can cross syntax/inline-diff
         // span boundaries. Gutter and +/- prefixes must keep their own styles.
-        let ranges: Vec<_> = line.content
+        let ranges: Vec<_> = line
+            .content
             .match_indices(pattern)
             .map(|(start, text)| start..start + text.len())
             .collect();
@@ -290,7 +285,10 @@ fn render_diff_line(
         for span in content_spans {
             let end = offset + span.content.len();
             let mut cursor = offset;
-            for range in ranges.iter().filter(|range| range.start < end && range.end > offset) {
+            for range in ranges
+                .iter()
+                .filter(|range| range.start < end && range.end > offset)
+            {
                 let start = range.start.max(offset);
                 let stop = range.end.min(end);
                 if cursor < start {

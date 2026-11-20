@@ -56,25 +56,17 @@ pub enum ImageProtocol {
     Kitty,
 }
 
-fn terminal_protocol(
-    term_program: &str,
-    ghostty: bool,
-) -> Option<ImageProtocol> {
+fn terminal_protocol(term_program: &str, ghostty: bool) -> Option<ImageProtocol> {
     let name = term_program.to_ascii_lowercase();
 
     if name.contains("iterm") {
         Some(ImageProtocol::Iterm2)
-    } else if ghostty
-        || name.contains("kitty")
-        || name.contains("wezterm")
-        || name == "rex"
-    {
+    } else if ghostty || name.contains("kitty") || name.contains("wezterm") || name == "rex" {
         Some(ImageProtocol::Kitty)
     } else {
         None
     }
 }
-
 
 /// Detect whether the current terminal environment supports inline image rendering.
 ///
@@ -187,8 +179,7 @@ impl MermaidCache {
         {
             let states = self.states.lock().unwrap();
             match states.get(&block.hash) {
-                Some(MermaidRenderState::Ready(_))
-                | Some(MermaidRenderState::Rendering) => return,
+                Some(MermaidRenderState::Ready(_)) | Some(MermaidRenderState::Rendering) => return,
                 _ => {}
             }
         }
@@ -256,7 +247,10 @@ impl MermaidCache {
                 Ok(Ok(output)) => {
                     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                     let mut s = states.lock().unwrap();
-                    s.insert(hash, MermaidRenderState::Failed(format!("mmdc failed: {stderr}")));
+                    s.insert(
+                        hash,
+                        MermaidRenderState::Failed(format!("mmdc failed: {stderr}")),
+                    );
                 }
                 Ok(Err(e)) => {
                     let mut s = states.lock().unwrap();
@@ -264,7 +258,10 @@ impl MermaidCache {
                 }
                 Err(_) => {
                     let mut s = states.lock().unwrap();
-                    s.insert(hash, MermaidRenderState::Failed("mmdc timed out (15s)".to_string()));
+                    s.insert(
+                        hash,
+                        MermaidRenderState::Failed("mmdc timed out (15s)".to_string()),
+                    );
                 }
             }
 
@@ -282,7 +279,11 @@ fn find_cache_dir() -> Option<PathBuf> {
         return None;
     }
     let git_dir = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Some(PathBuf::from(git_dir).join("semantic-diff-cache").join("mermaid"))
+    Some(
+        PathBuf::from(git_dir)
+            .join("semantic-diff-cache")
+            .join("mermaid"),
+    )
 }
 
 #[cfg(test)]
@@ -291,14 +292,8 @@ mod tests {
 
     #[test]
     fn rex_uses_kitty_graphics() {
-        assert_eq!(
-            terminal_protocol("rex", false),
-            Some(ImageProtocol::Kitty)
-        );
-        assert_eq!(
-            terminal_protocol("Rex", false),
-            Some(ImageProtocol::Kitty)
-        );
+        assert_eq!(terminal_protocol("rex", false), Some(ImageProtocol::Kitty));
+        assert_eq!(terminal_protocol("Rex", false), Some(ImageProtocol::Kitty));
     }
 
     #[test]

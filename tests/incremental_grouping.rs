@@ -17,10 +17,9 @@ use semantic_diff::app::{App, Message};
 use semantic_diff::config::Config;
 use semantic_diff::diff;
 use semantic_diff::grouper::{
-    GroupedChange, GroupingStatus, SemanticGroup,
-    compute_all_file_hashes, compute_diff_delta, compute_file_hash,
-    incremental_hunk_summaries, merge_groups, normalize_hunk_indices,
-    remove_files_from_groups,
+    compute_all_file_hashes, compute_diff_delta, compute_file_hash, incremental_hunk_summaries,
+    merge_groups, normalize_hunk_indices, remove_files_from_groups, GroupedChange, GroupingStatus,
+    SemanticGroup,
 };
 
 /// Mutex to serialize tests that manipulate the PATH environment variable.
@@ -262,7 +261,9 @@ fn test_delta_unchanged_files() {
     let delta = compute_diff_delta(&hashes_v3, &hashes_v1);
 
     assert!(
-        delta.unchanged_files.contains(&"src/middleware.rs".to_string()),
+        delta
+            .unchanged_files
+            .contains(&"src/middleware.rs".to_string()),
         "middleware.rs should be unchanged, got: {:?}",
         delta.unchanged_files
     );
@@ -280,7 +281,7 @@ fn test_delta_mixed() {
     new_hashes.insert("file_a.rs".to_string(), 100); // unchanged
     new_hashes.insert("file_b.rs".to_string(), 999); // modified
     new_hashes.insert("file_d.rs".to_string(), 400); // new
-    // file_c.rs absent → removed
+                                                     // file_c.rs absent → removed
 
     let delta = compute_diff_delta(&new_hashes, &old_hashes);
 
@@ -493,10 +494,17 @@ fn test_merge_matching_label() {
 
     let merged = merge_groups(&existing, &new_assignments, &delta);
 
-    assert_eq!(merged.len(), 1, "should still have 1 group after merging same label");
+    assert_eq!(
+        merged.len(),
+        1,
+        "should still have 1 group after merging same label"
+    );
     let changes = merged[0].changes();
     let files: Vec<&str> = changes.iter().map(|c| c.file.as_str()).collect();
-    assert!(files.contains(&"src/auth.rs"), "existing file should be retained");
+    assert!(
+        files.contains(&"src/auth.rs"),
+        "existing file should be retained"
+    );
     assert!(files.contains(&"src/router.rs"), "new file should be added");
 }
 
@@ -518,7 +526,10 @@ fn test_merge_new_label() {
 
     assert_eq!(merged.len(), 2, "should have 2 groups (existing + new)");
     let labels: Vec<&str> = merged.iter().map(|g| g.label.as_str()).collect();
-    assert!(labels.contains(&"Auth"), "original group should still exist");
+    assert!(
+        labels.contains(&"Auth"),
+        "original group should still exist"
+    );
     assert!(labels.contains(&"Routing"), "new group should be added");
 }
 
@@ -612,10 +623,7 @@ fn test_incremental_summaries_includes_context() {
 
     let existing = vec![make_group_multi(
         "Auth Refactor",
-        vec![
-            ("src/auth.rs", vec![0, 1]),
-            ("src/middleware.rs", vec![0]),
-        ],
+        vec![("src/auth.rs", vec![0, 1]), ("src/middleware.rs", vec![0])],
     )];
 
     let delta = semantic_diff::grouper::DiffDelta {
@@ -671,10 +679,7 @@ fn test_incremental_summaries_skips_unchanged() {
 
     let existing = vec![make_group_multi(
         "Auth",
-        vec![
-            ("src/auth.rs", vec![0, 1]),
-            ("src/middleware.rs", vec![0]),
-        ],
+        vec![("src/auth.rs", vec![0, 1]), ("src/middleware.rs", vec![0])],
     )];
 
     let output = incremental_hunk_summaries(&data, &delta, &existing, 8000);
@@ -701,10 +706,7 @@ fn test_incremental_summaries_respects_configured_threshold() {
 
     let delta = semantic_diff::grouper::DiffDelta {
         new_files: vec!["src/router.rs".to_string()],
-        modified_files: vec![
-            "src/auth.rs".to_string(),
-            "src/middleware.rs".to_string(),
-        ],
+        modified_files: vec!["src/auth.rs".to_string(), "src/middleware.rs".to_string()],
         removed_files: vec![],
         unchanged_files: vec![],
     };
@@ -787,10 +789,7 @@ fn test_incremental_complete_merges() {
     // Pre-seed existing groups (simulating prior GroupingComplete)
     app.semantic_groups = Some(vec![make_group_multi(
         "Auth Refactor",
-        vec![
-            ("src/auth.rs", vec![0, 1]),
-            ("src/middleware.rs", vec![0]),
-        ],
+        vec![("src/auth.rs", vec![0, 1]), ("src/middleware.rs", vec![0])],
     )]);
 
     // New assignment: router.rs gets grouped under "Auth Refactor"
@@ -999,10 +998,7 @@ fn test_stress_merge_20_groups() {
     // Verify the merged groups retained their original files
     let group_0 = merged.iter().find(|g| g.label == "Group 0").unwrap();
     let group_0_changes = group_0.changes();
-    let files_0: Vec<&str> = group_0_changes
-        .iter()
-        .map(|c| c.file.as_str())
-        .collect();
+    let files_0: Vec<&str> = group_0_changes.iter().map(|c| c.file.as_str()).collect();
     assert!(
         files_0.contains(&"src/file_0.rs"),
         "Group 0 should still contain file_0.rs"

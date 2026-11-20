@@ -2,8 +2,8 @@ pub mod llm;
 
 use crate::diff::DiffData;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 /// Response envelope from LLM grouping request.
@@ -325,7 +325,7 @@ pub fn incremental_hunk_summaries(
     diff_data: &DiffData,
     delta: &DiffDelta,
     existing_groups: &[SemanticGroup],
-    max_summary_bytes: usize
+    max_summary_bytes: usize,
 ) -> String {
     let mut out = String::new();
 
@@ -517,7 +517,7 @@ mod tests {
     fn test_truncate_cjk_at_boundary_no_panic() {
         // CJK characters are 3 bytes each in UTF-8
         let s = "\u{4e16}\u{754c}\u{4f60}\u{597d}"; // 世界你好 (12 bytes)
-        // Truncating at byte 4 should not panic -- it should back up to byte 3
+                                                    // Truncating at byte 4 should not panic -- it should back up to byte 3
         let result = truncate(s, 4);
         assert_eq!(result, "\u{4e16}"); // 世 (3 bytes)
     }
@@ -526,7 +526,7 @@ mod tests {
     fn test_truncate_emoji_at_boundary_no_panic() {
         // Emoji like 🦀 are 4 bytes in UTF-8
         let s = "a🦀b"; // 1 + 4 + 1 = 6 bytes
-        // Truncating at byte 3 (middle of emoji) should not panic
+                        // Truncating at byte 3 (middle of emoji) should not panic
         let result = truncate(s, 3);
         assert_eq!(result, "a"); // backs up to byte 1
     }

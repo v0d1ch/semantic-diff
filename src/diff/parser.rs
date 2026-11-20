@@ -57,22 +57,22 @@ pub fn parse(raw: &str) -> DiffData {
                             };
 
                             let (source_number, target_number) = match line_type {
-                                   LineType::Added => {
-                                       let numbers = (None, Some(target_line));
-                                       target_line += 1;
-                                       numbers
-                                   }
-                                   LineType::Removed => {
-                                       let numbers = (Some(source_line), None);
-                                       source_line += 1;
-                                       numbers
-                                   }
-                                   LineType::Context => {
-                                       let numbers = (Some(source_line), Some(target_line));
-                                       source_line += 1;
-                                       target_line += 1;
-                                       numbers
-                                   }
+                                LineType::Added => {
+                                    let numbers = (None, Some(target_line));
+                                    target_line += 1;
+                                    numbers
+                                }
+                                LineType::Removed => {
+                                    let numbers = (Some(source_line), None);
+                                    source_line += 1;
+                                    numbers
+                                }
+                                LineType::Context => {
+                                    let numbers = (Some(source_line), Some(target_line));
+                                    source_line += 1;
+                                    target_line += 1;
+                                    numbers
+                                }
                             };
 
                             Some(DiffLine {
@@ -88,10 +88,7 @@ pub fn parse(raw: &str) -> DiffData {
                     let mut hunk = Hunk {
                         header: format!(
                             "@@ -{},{} +{},{} @@",
-                            h.source_start,
-                            h.source_length,
-                            h.target_start,
-                            h.target_length
+                            h.source_start, h.source_length, h.target_start, h.target_length
                         ),
                         source_start: h.source_start,
                         target_start: h.target_start,

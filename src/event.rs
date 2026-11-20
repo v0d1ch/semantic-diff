@@ -9,8 +9,8 @@ use crate::app::Message;
 /// Sends all events through the mpsc channel for the main loop to process.
 pub async fn event_loop(tx: mpsc::Sender<Message>) {
     let mut reader = EventStream::new();
-    let mut sigusr1 = signal(SignalKind::user_defined1())
-        .expect("failed to register SIGUSR1 handler");
+    let mut sigusr1 =
+        signal(SignalKind::user_defined1()).expect("failed to register SIGUSR1 handler");
 
     loop {
         tokio::select! {

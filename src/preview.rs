@@ -28,23 +28,37 @@ struct PreviewSource {
 }
 
 impl PreviewCache {
-    pub(crate) fn blocks(&mut self, path: &Path, width: u16, theme: &Theme)
-        -> Option<Rc<Vec<markdown::PreviewBlock>>>
-    {
+    pub(crate) fn blocks(
+        &mut self,
+        path: &Path,
+        width: u16,
+        theme: &Theme,
+    ) -> Option<Rc<Vec<markdown::PreviewBlock>>> {
         let metadata = match std::fs::metadata(path) {
             Ok(metadata) => metadata,
-            Err(_) => { *self = Self::default(); return None; }
+            Err(_) => {
+                *self = Self::default();
+                return None;
+            }
         };
         let modified = metadata.modified().ok();
-        let unchanged = modified.is_some() && self.source.as_ref().is_some_and(|source|
-            source.path == path && source.modified == modified && source.len == metadata.len());
+        let unchanged = modified.is_some()
+            && self.source.as_ref().is_some_and(|source| {
+                source.path == path && source.modified == modified && source.len == metadata.len()
+            });
         if !unchanged {
             let text = match std::fs::read_to_string(path) {
                 Ok(text) => text,
-                Err(_) => { *self = Self::default(); return None; }
+                Err(_) => {
+                    *self = Self::default();
+                    return None;
+                }
             };
             self.source = Some(PreviewSource {
-                path: path.to_owned(), modified, len: metadata.len(), text,
+                path: path.to_owned(),
+                modified,
+                len: metadata.len(),
+                text,
             });
             self.rendered = None;
         }
@@ -53,7 +67,11 @@ impl PreviewCache {
                 return Some(Rc::clone(blocks));
             }
         }
-        let blocks = Rc::new(markdown::parse_markdown(&self.source.as_ref()?.text, width, theme));
+        let blocks = Rc::new(markdown::parse_markdown(
+            &self.source.as_ref()?.text,
+            width,
+            theme,
+        ));
         self.rendered = Some((width, theme.clone(), Rc::clone(&blocks)));
         Some(blocks)
     }
@@ -73,7 +91,10 @@ mod cache_tests {
         let mut cache = PreviewCache::default();
         let first = cache.blocks(&path, 80, &theme).unwrap();
         for _ in 0..10 {
-            assert!(Rc::ptr_eq(&first, &cache.blocks(&path, 80, &theme).unwrap()));
+            assert!(Rc::ptr_eq(
+                &first,
+                &cache.blocks(&path, 80, &theme).unwrap()
+            ));
         }
         std::fs::write(&path, "# A different document").unwrap();
         let edited = cache.blocks(&path, 80, &theme).unwrap();
@@ -82,8 +103,12 @@ mod cache_tests {
         // Same-size edits with a changed timestamp also invalidate the source.
         std::fs::write(&path, "# B different document").unwrap();
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.set_modified(SystemTime::now() + std::time::Duration::from_secs(10)).unwrap();
-        assert!(!Rc::ptr_eq(&edited, &cache.blocks(&path, 80, &theme).unwrap()));
+        file.set_modified(SystemTime::now() + std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(!Rc::ptr_eq(
+            &edited,
+            &cache.blocks(&path, 80, &theme).unwrap()
+        ));
     }
 
     #[test]

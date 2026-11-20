@@ -270,8 +270,7 @@ fn e2e_path_limiter_matching_file() {
 #[test]
 fn e2e_path_limiter_no_match() {
     let tmp = setup_repo();
-    let (code, _stdout, stderr) =
-        run_semantic_diff(tmp.path(), &["HEAD", "--", "nonexistent/"]);
+    let (code, _stdout, stderr) = run_semantic_diff(tmp.path(), &["HEAD", "--", "nonexistent/"]);
 
     assert!(
         stderr.contains("No changes detected"),
@@ -296,10 +295,8 @@ fn e2e_path_limiter_directory() {
 #[test]
 fn e2e_multiple_path_limiters() {
     let tmp = setup_repo();
-    let (_code, _stdout, stderr) = run_semantic_diff(
-        tmp.path(),
-        &["HEAD", "--", "file_a.txt", "src/main.rs"],
-    );
+    let (_code, _stdout, stderr) =
+        run_semantic_diff(tmp.path(), &["HEAD", "--", "file_a.txt", "src/main.rs"]);
 
     assert!(
         !stderr.contains("No changes detected"),
@@ -368,7 +365,11 @@ fn e2e_head_tilde() {
     run_git(repo, &["commit", "-m", "second commit"]);
 
     // Now modify again
-    std::fs::write(repo.join("file_b.txt"), "alpha\nbeta modified again\ngamma\n").unwrap();
+    std::fs::write(
+        repo.join("file_b.txt"),
+        "alpha\nbeta modified again\ngamma\n",
+    )
+    .unwrap();
 
     let (_code, _stdout, stderr) = run_semantic_diff(repo, &["HEAD~1"]);
     assert!(
@@ -418,8 +419,7 @@ fn e2e_commit_to_commit() {
 
     let second_hash = git_output(repo, &["rev-parse", "HEAD"]);
 
-    let (_code, _stdout, stderr) =
-        run_semantic_diff(repo, &[&first_hash, &second_hash]);
+    let (_code, _stdout, stderr) = run_semantic_diff(repo, &[&first_hash, &second_hash]);
     assert!(
         !stderr.contains("No changes detected"),
         "Commit-to-commit should show changes, stderr: {stderr}"
@@ -464,11 +464,7 @@ fn e2e_many_files_with_head() {
 
     // Create 200 files
     for i in 0..200 {
-        std::fs::write(
-            repo.join(format!("gen_{i}.txt")),
-            format!("content {i}\n"),
-        )
-        .unwrap();
+        std::fs::write(repo.join(format!("gen_{i}.txt")), format!("content {i}\n")).unwrap();
     }
     run_git(repo, &["add", "."]);
     run_git(repo, &["commit", "-m", "add many files"]);
@@ -549,10 +545,7 @@ fn detect_default_branch(repo: &std::path::Path) -> String {
 
 /// Get trimmed stdout from a git command.
 fn git_output(repo: &std::path::Path, args: &[&str]) -> String {
-    let output = git_command(repo)
-        .args(args)
-        .output()
-        .unwrap();
+    let output = git_command(repo).args(args).output().unwrap();
     assert!(
         output.status.success(),
         "git {args:?}: {}",

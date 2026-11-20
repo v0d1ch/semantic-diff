@@ -121,10 +121,15 @@ pub(crate) struct TreeCache {
 }
 
 pub fn build_tree_items(app: &App, sidebar_width: u16) -> Rc<Vec<TreeItem<'static, TreeNodeId>>> {
-    let identity = (app.diff_data.files.as_ptr() as usize, app.diff_data.files.len());
+    let identity = (
+        app.diff_data.files.as_ptr() as usize,
+        app.diff_data.files.len(),
+    );
     let mut cache = app.tree_cache.borrow_mut();
-    if cache.identity == identity && cache.groups == app.semantic_groups
-        && cache.width == sidebar_width && cache.group_fg == Some(app.theme.tree_group_fg)
+    if cache.identity == identity
+        && cache.groups == app.semantic_groups
+        && cache.width == sidebar_width
+        && cache.group_fg == Some(app.theme.tree_group_fg)
     {
         if let Some(items) = &cache.items {
             return Rc::clone(items);
@@ -345,19 +350,33 @@ fn build_grouped_tree<'a>(
     // Available width for group header: sidebar - borders(2) - highlight(3) - node_symbol(2)
     let group_overhead: u16 = 2 + 3 + 2;
 
-    let files_by_path: HashMap<_, _> = app.diff_data.files.iter().enumerate()
+    let files_by_path: HashMap<_, _> = app
+        .diff_data
+        .files
+        .iter()
+        .enumerate()
         .map(|(index, file)| (file.target_file.trim_start_matches("b/"), index))
         .collect();
     // Compute each hunk's statistics once, even when several groups reference it.
-    let hunk_counts: Vec<Vec<(usize, usize)>> = app.diff_data.files.iter().map(|file| {
-        file.hunks.iter().map(|hunk| {
-            hunk.lines.iter().fold((0, 0), |(added, removed), line| match line.line_type {
-                crate::diff::LineType::Added => (added + 1, removed),
-                crate::diff::LineType::Removed => (added, removed + 1),
-                crate::diff::LineType::Context => (added, removed),
-            })
-        }).collect()
-    }).collect();
+    let hunk_counts: Vec<Vec<(usize, usize)>> = app
+        .diff_data
+        .files
+        .iter()
+        .map(|file| {
+            file.hunks
+                .iter()
+                .map(|hunk| {
+                    hunk.lines
+                        .iter()
+                        .fold((0, 0), |(added, removed), line| match line.line_type {
+                            crate::diff::LineType::Added => (added + 1, removed),
+                            crate::diff::LineType::Removed => (added, removed + 1),
+                            crate::diff::LineType::Context => (added, removed),
+                        })
+                })
+                .collect()
+        })
+        .collect();
 
     for (gi, group) in groups.iter().enumerate() {
         let mut root = Directory::default();
@@ -365,10 +384,16 @@ fn build_grouped_tree<'a>(
         let mut group_removed: usize = 0;
 
         for change in &group.changes() {
-            let file_index = files_by_path.get(change.file.as_str()).copied().or_else(|| {
-                app.diff_data.files.iter().position(|file|
-                    file.target_file.trim_start_matches("b/").ends_with(change.file.as_str()))
-            });
+            let file_index = files_by_path
+                .get(change.file.as_str())
+                .copied()
+                .or_else(|| {
+                    app.diff_data.files.iter().position(|file| {
+                        file.target_file
+                            .trim_start_matches("b/")
+                            .ends_with(change.file.as_str())
+                    })
+                });
             if let Some(file_index) = file_index {
                 let file = &app.diff_data.files[file_index];
                 let path = file.target_file.trim_start_matches("b/").to_string();
@@ -531,7 +556,6 @@ pub fn render_tree(app: &App, frame: &mut Frame, area: Rect) {
 
     frame.render_stateful_widget(tree, area, &mut app.tree_state.borrow_mut());
 }
-
 
 #[cfg(test)]
 mod tests {

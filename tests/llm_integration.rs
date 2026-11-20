@@ -156,9 +156,15 @@ fn test_files_fallback_deserialization() {
     let changes = response.groups[0].changes();
     assert_eq!(changes.len(), 2);
     assert_eq!(changes[0].file, "src/auth.rs");
-    assert!(changes[0].hunks.is_empty(), "fallback should have empty hunks");
+    assert!(
+        changes[0].hunks.is_empty(),
+        "fallback should have empty hunks"
+    );
     assert_eq!(changes[1].file, "src/middleware.rs");
-    assert!(changes[1].hunks.is_empty(), "fallback should have empty hunks");
+    assert!(
+        changes[1].hunks.is_empty(),
+        "fallback should have empty hunks"
+    );
 }
 
 // ============================================================
@@ -179,7 +185,10 @@ fn test_no_llm_backend_returns_none() {
 
     std::env::set_var("PATH", &original_path);
 
-    assert!(backend.is_none(), "detect_backend should return None when no LLM CLI is in PATH");
+    assert!(
+        backend.is_none(),
+        "detect_backend should return None when no LLM CLI is in PATH"
+    );
 }
 
 /// TEST-07b: App with no LLM backend stays Idle.
@@ -196,7 +205,11 @@ fn test_app_no_backend_stays_idle() {
     std::env::set_var("PATH", &original_path);
 
     assert!(app.llm_backend.is_none(), "llm_backend should be None");
-    assert_eq!(app.grouping_status, GroupingStatus::Idle, "grouping_status should be Idle");
+    assert_eq!(
+        app.grouping_status,
+        GroupingStatus::Idle,
+        "grouping_status should be Idle"
+    );
 }
 
 // ============================================================
@@ -207,7 +220,10 @@ fn test_app_no_backend_stays_idle() {
 #[test]
 fn test_garbage_string_fails_deserialization() {
     let result = serde_json::from_str::<GroupingResponse>("not json at all");
-    assert!(result.is_err(), "Garbage string should fail to deserialize as GroupingResponse");
+    assert!(
+        result.is_err(),
+        "Garbage string should fail to deserialize as GroupingResponse"
+    );
 }
 
 /// TEST-08b: Truncated JSON fails deserialization.
@@ -223,7 +239,10 @@ fn test_wrong_schema_fails_deserialization() {
     let result = serde_json::from_str::<GroupingResponse>(r#"{"wrong_field": 123}"#);
     // GroupingResponse requires a "groups" field (no #[serde(default)] on the struct).
     // This should be an error.
-    assert!(result.is_err(), "Wrong schema should fail to deserialize (groups field is required)");
+    assert!(
+        result.is_err(),
+        "Wrong schema should fail to deserialize (groups field is required)"
+    );
 }
 
 /// TEST-08d: GroupingFailed message sets Error status, semantic_groups stays None.
@@ -241,7 +260,10 @@ fn test_grouping_failed_sets_error_status() {
     app.event_tx = Some(tx);
 
     // Simulate a grouping failure
-    app.update(Message::GroupingFailed("parse error: invalid JSON".to_string(), 0));
+    app.update(Message::GroupingFailed(
+        "parse error: invalid JSON".to_string(),
+        0,
+    ));
 
     assert!(
         matches!(app.grouping_status, GroupingStatus::Error(ref msg) if msg.contains("parse error")),
@@ -307,7 +329,10 @@ fn test_debounced_refresh_carries_git_args() {
                 "SpawnDiffParse should carry the App's git_diff_args"
             );
         }
-        other => panic!("Expected SpawnDiffParse, got {:?}", std::mem::discriminant(&other)),
+        other => panic!(
+            "Expected SpawnDiffParse, got {:?}",
+            std::mem::discriminant(&other)
+        ),
     }
 }
 
@@ -325,7 +350,13 @@ fn test_different_args_produce_different_commands() {
         vec!["diff".into(), "-M".into(), "--staged".into()],
         vec!["diff".into(), "-M".into(), "main..feature".into()],
         vec!["diff".into(), "-M".into(), "main...feature".into()],
-        vec!["diff".into(), "-M".into(), "HEAD".into(), "--".into(), "src/".into()],
+        vec![
+            "diff".into(),
+            "-M".into(),
+            "HEAD".into(),
+            "--".into(),
+            "src/".into(),
+        ],
     ];
 
     for args in &test_cases {
@@ -468,11 +499,7 @@ fn test_git_args_survive_grouping_failed() {
     std::env::set_var("PATH", "/nonexistent_test_dir");
     let config = Config::default_config();
 
-    let args = vec![
-        "diff".to_string(),
-        "-M".to_string(),
-        "--cached".to_string(),
-    ];
+    let args = vec!["diff".to_string(), "-M".to_string(), "--cached".to_string()];
     let mut app = App::new(diff_data, &config, args.clone());
     std::env::set_var("PATH", &original_path);
 

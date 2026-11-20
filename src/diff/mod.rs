@@ -12,14 +12,16 @@ pub fn parse_with_untracked(raw_diff: &str) -> (DiffData, String) {
 
 /// Same as `parse_with_untracked` but accepts pre-discovered untracked paths.
 /// Returns `(diff_data, combined_raw_diff)`.
-pub fn parse_with_untracked_paths(raw_diff: &str, untracked_paths: &[String]) -> (DiffData, String) {
+pub fn parse_with_untracked_paths(
+    raw_diff: &str,
+    untracked_paths: &[String],
+) -> (DiffData, String) {
     if untracked_paths.is_empty() {
         let data = parse(raw_diff);
         return (data, raw_diff.to_string());
     }
 
-    let (untracked_diff, binary_untracked) =
-        untracked::generate_untracked_diff(untracked_paths);
+    let (untracked_diff, binary_untracked) = untracked::generate_untracked_diff(untracked_paths);
 
     let combined = if untracked_diff.is_empty() {
         raw_diff.to_string()

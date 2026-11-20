@@ -31,9 +31,11 @@ pub fn render_preview(app: &App, frame: &mut Frame, area: Rect) -> Vec<PendingIm
     let mut pending_images = Vec::new();
 
     let path = get_current_md_path(app);
-    let blocks = match path.as_ref().and_then(|path|
-        app.preview_cache.borrow_mut().blocks(std::path::Path::new(path), area.width, &app.theme))
-    {
+    let blocks = match path.as_ref().and_then(|path| {
+        app.preview_cache
+            .borrow_mut()
+            .blocks(std::path::Path::new(path), area.width, &app.theme)
+    }) {
         Some(blocks) => blocks,
         None => {
             let msg = Paragraph::new(Line::from(Span::styled(
@@ -154,10 +156,7 @@ pub fn render_preview(app: &App, frame: &mut Frame, area: Rect) -> Vec<PendingIm
 /// Write pending images to stdout using the appropriate terminal protocol.
 /// Call this AFTER terminal.draw() so ratatui's buffer has already been flushed.
 /// `had_images_last_frame`: if true and `images` is empty, clears stale images.
-pub fn flush_images(
-    images: &[PendingImage],
-    protocol: ImageProtocol,
-) {
+pub fn flush_images(images: &[PendingImage], protocol: ImageProtocol) {
     // If we had images last frame but not this frame, force full redraw
     // to clear the stale image data that ratatui doesn't know about.
     if images.is_empty() {
@@ -313,7 +312,9 @@ fn build_mermaid_segment(
             segments.push(Segment::Text(vec![
                 Line::from(Span::styled(
                     "  [Rendering diagram...]",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 )),
                 Line::raw(""),
             ]));
@@ -327,7 +328,9 @@ fn build_mermaid_segment(
             segments.push(Segment::Text(vec![
                 Line::from(Span::styled(
                     "  [Rendering diagram...]",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 )),
                 Line::raw(""),
             ]));

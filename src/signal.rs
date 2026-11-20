@@ -210,7 +210,10 @@ mod tests {
         env::set_var("XDG_RUNTIME_DIR", test_dir.path());
         let result = read_pid();
         env::remove_var("XDG_RUNTIME_DIR");
-        assert_eq!(result, None, "read_pid should return None when file doesn't exist");
+        assert_eq!(
+            result, None,
+            "read_pid should return None when file doesn't exist"
+        );
     }
 
     #[test]
@@ -233,7 +236,13 @@ mod tests {
         let _ = fs::remove_file(&tmp_path);
         fs::write(&tmp_path, "12345").unwrap();
         fs::rename(&tmp_path, &pid_path).unwrap();
-        assert!(pid_path.exists(), "PID file should exist after atomic write");
-        assert!(!tmp_path.exists(), "Temp file should not exist after atomic write");
+        assert!(
+            pid_path.exists(),
+            "PID file should exist after atomic write"
+        );
+        assert!(
+            !tmp_path.exists(),
+            "Temp file should not exist after atomic write"
+        );
     }
 }

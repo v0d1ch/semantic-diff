@@ -24,11 +24,7 @@ pub fn render_review_with_diff(app: &App, frame: &mut Frame, area: Rect) {
         if let Some(review) = app.review_cache.get(&hash) {
             // Find group label
             let label = find_group_label(app, hash);
-            let completed = review
-                .sections
-                .values()
-                .filter(|s| s.is_complete())
-                .count();
+            let completed = review.sections.values().filter(|s| s.is_complete()).count();
             lines.push(Line::from(vec![
                 Span::styled(
                     format!(" Review: \"{}\"", label),
@@ -169,9 +165,7 @@ fn render_section(
         SectionState::Error(msg) => {
             lines.push(Line::from(Span::styled(
                 format!("  [{} failed: {}]", section.label(), msg),
-                Style::default()
-                    .fg(Color::Red)
-                    .add_modifier(Modifier::DIM),
+                Style::default().fg(Color::Red).add_modifier(Modifier::DIM),
             )));
             lines.push(Line::raw(""));
         }

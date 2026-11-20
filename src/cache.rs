@@ -11,7 +11,7 @@ pub struct AiCacheKey {
     pub backend: Option<crate::grouper::llm::LlmBackend>,
     pub model: String,
     pub reasoning_effort: Option<String>,
-    pub max_summary_bytes: usize
+    pub max_summary_bytes: usize,
 }
 
 impl AiCacheKey {
@@ -285,7 +285,7 @@ mod tests {
             backend: Some(crate::grouper::llm::LlmBackend::Codex),
             model: "test-model".into(),
             reasoning_effort: Some("high".into()),
-            max_summary_bytes: 8000
+            max_summary_bytes: 8000,
         }
     }
 

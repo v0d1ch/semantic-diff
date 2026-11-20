@@ -66,7 +66,7 @@ impl Config {
             claude_model: "haiku".to_string(),
             copilot_model: "gemini-flash".to_string(),
             theme_mode: ThemeMode::Auto,
-            max_summary_bytes: 8000
+            max_summary_bytes: 8000,
         }
     }
 
@@ -262,7 +262,6 @@ fn resolve_summary_limit(value: Option<usize>) -> Result<usize, &'static str> {
         Some(0) => Err("max_summary_bytes should be greater than zero"),
         Some(x) => Ok(x),
     }
-
 }
 
 fn resolve_model_for_codex(model: Option<&str>) -> String {
@@ -377,25 +376,23 @@ fn strip_json_comments(input: &str) -> String {
 mod tests {
     use super::*;
 
-   #[test]
-   fn summary_limit_can_be_supplied_or_omitted() {
-       let supplied: RawConfig =
-           serde_json::from_str(r#"{"max_summary_bytes": 16000}"#)
-               .unwrap();
-   
-       assert_eq!(supplied.max_summary_bytes, Some(16000));
-   
-       let omitted: RawConfig = serde_json::from_str("{}").unwrap();
-   
-       assert_eq!(omitted.max_summary_bytes, None);
-   }
+    #[test]
+    fn summary_limit_can_be_supplied_or_omitted() {
+        let supplied: RawConfig = serde_json::from_str(r#"{"max_summary_bytes": 16000}"#).unwrap();
 
-   #[test]
-   fn summary_limit_defaults_and_rejects_zero() {
-       assert_eq!(resolve_summary_limit(None), Ok(8000));
-       assert_eq!(resolve_summary_limit(Some(16000)), Ok(16000));
-       assert!(resolve_summary_limit(Some(0)).is_err());
-   }
+        assert_eq!(supplied.max_summary_bytes, Some(16000));
+
+        let omitted: RawConfig = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(omitted.max_summary_bytes, None);
+    }
+
+    #[test]
+    fn summary_limit_defaults_and_rejects_zero() {
+        assert_eq!(resolve_summary_limit(None), Ok(8000));
+        assert_eq!(resolve_summary_limit(Some(16000)), Ok(16000));
+        assert!(resolve_summary_limit(Some(0)).is_err());
+    }
 
     #[test]
     fn codex_effort_is_optional_and_does_not_apply_to_other_backends() {

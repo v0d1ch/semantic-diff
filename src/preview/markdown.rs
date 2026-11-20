@@ -3,7 +3,7 @@
 //! Renders headings, tables, code blocks, lists, links, blockquotes,
 //! and inline formatting (bold, italic, code) as styled ratatui Lines.
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, CodeBlockKind, HeadingLevel};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -149,7 +149,9 @@ impl<'t> MarkdownRenderer<'t> {
         if self.in_blockquote {
             let mut prefixed = vec![Span::styled(
                 "  > ".to_string(),
-                Style::default().fg(self.theme.md_blockquote_fg).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(self.theme.md_blockquote_fg)
+                    .add_modifier(Modifier::DIM),
             )];
             prefixed.extend(spans);
             Some(Line::from(prefixed))
@@ -175,10 +177,8 @@ impl<'t> MarkdownRenderer<'t> {
                     HeadingLevel::H6 => ("###### ", self.theme.md_heading_h6_fg),
                 };
                 self.push_style(Modifier::BOLD, Some(color));
-                self.current_spans.push(Span::styled(
-                    prefix.to_string(),
-                    self.current_style(),
-                ));
+                self.current_spans
+                    .push(Span::styled(prefix.to_string(), self.current_style()));
             }
             Event::End(TagEnd::Heading(_)) => {
                 if let Some(line) = self.flush_line() {
@@ -245,10 +245,8 @@ impl<'t> MarkdownRenderer<'t> {
                 } else if let Some(ref mut table) = self.table_state {
                     table.current_cell.push_str(text.as_ref());
                 } else {
-                    self.current_spans.push(Span::styled(
-                        text.to_string(),
-                        self.current_style(),
-                    ));
+                    self.current_spans
+                        .push(Span::styled(text.to_string(), self.current_style()));
                 }
             }
 
@@ -411,7 +409,11 @@ impl<'t> MarkdownRenderer<'t> {
                     let content = last.content.to_string();
                     *last = Span::styled(
                         format!("{content}{marker}"),
-                        Style::default().fg(if *checked { Color::Green } else { Color::Yellow }),
+                        Style::default().fg(if *checked {
+                            Color::Green
+                        } else {
+                            Color::Yellow
+                        }),
                     );
                 }
             }
@@ -508,10 +510,7 @@ fn render_table(rows: &[Vec<String>], pane_width: u16) -> Vec<Line<'static>> {
                 .map(|w| dash.repeat(w + 2))
                 .collect::<Vec<_>>()
                 .join("┼");
-            lines.push(Line::from(Span::styled(
-                format!("  ├{sep}┤"),
-                border_style,
-            )));
+            lines.push(Line::from(Span::styled(format!("  ├{sep}┤"), border_style)));
         }
     }
 
@@ -640,18 +639,31 @@ mod tests {
     fn test_table_wraps_in_narrow_width() {
         let rows = vec![
             vec!["Name".to_string(), "Description".to_string()],
-            vec!["Alice".to_string(), "A very long description that should wrap".to_string()],
+            vec![
+                "Alice".to_string(),
+                "A very long description that should wrap".to_string(),
+            ],
             vec!["Bob".to_string(), "Short".to_string()],
         ];
         let lines = render_table(&rows, 40);
         for line in &lines {
             // Use char count, not byte count (box-drawing chars are multi-byte)
             let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-            assert!(total <= 40, "Line width {total} exceeds pane width 40: {:?}",
-                line.spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>());
+            assert!(
+                total <= 40,
+                "Line width {total} exceeds pane width 40: {:?}",
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<Vec<_>>()
+            );
         }
         // The wrapped table should have more lines than a 3-row table normally would
-        assert!(lines.len() > 5, "Table should have wrapped rows, got {} lines", lines.len());
+        assert!(
+            lines.len() > 5,
+            "Table should have wrapped rows, got {} lines",
+            lines.len()
+        );
     }
 
     #[test]
