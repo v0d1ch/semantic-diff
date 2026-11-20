@@ -23,7 +23,7 @@
 
         # You can pin a specific version or just use the latest stable
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = [ "rust-analyzer" "rust-src" ];
+          extensions = [ "rust-analyzer" "rust-src" "clippy" ];
         };
 
       in {
