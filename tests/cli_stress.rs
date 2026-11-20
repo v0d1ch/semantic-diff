@@ -308,6 +308,56 @@ fn e2e_multiple_path_limiters() {
 // E2E: Error handling
 // ============================================================
 
+#[test]
+fn e2e_review_file_rejects_invalid_paths_and_contents_before_startup() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A usable default must not hide an invalid explicitly selected file.
+    std::fs::write(tmp.path().join("review.md"), "Review the changes.").unwrap();
+    std::fs::create_dir(tmp.path().join("directory")).unwrap();
+    std::fs::write(tmp.path().join("empty.md"), "").unwrap();
+    std::fs::write(tmp.path().join("blank.md"), " \n\t").unwrap();
+    std::fs::write(tmp.path().join("invalid-utf8.md"), [0xff]).unwrap();
+
+    for (path, expected) in [
+        ("missing.md", "Could not read review instructions"),
+        ("directory", "Could not read review instructions"),
+        ("empty.md", "Review instructions are empty"),
+        ("blank.md", "Review instructions are empty"),
+        ("invalid-utf8.md", "Could not read review instructions"),
+    ] {
+        let (code, stdout, stderr) = run_semantic_diff(tmp.path(), &["--review-file", path]);
+        assert_ne!(code, 0, "{path}: {stderr}");
+        assert!(stderr.contains(expected), "{path}: {stderr}");
+        assert!(stderr.contains(path), "{path}: {stderr}");
+        assert!(!stderr.contains("No changes detected"), "{stderr}");
+        assert!(stdout.is_empty(), "Unexpected terminal output: {stdout:?}");
+        assert_no_unexpected_panic(&stderr, path);
+    }
+}
+
+#[test]
+fn e2e_review_file_accepts_relative_and_external_paths() {
+    let repo = setup_repo();
+    let external = tempfile::tempdir().unwrap();
+    let path = external.path().join("review instructions.md");
+    std::fs::write(&path, "Review the changes.").unwrap();
+    for selected in ["file_a.txt", path.to_str().unwrap()] {
+        // Comparing identical commits avoids entering the TUI in this test.
+        let (code, _, stderr) =
+            run_semantic_diff(repo.path(), &["--review-file", selected, "HEAD", "HEAD"]);
+        assert_eq!(code, 0, "{selected}: {stderr}");
+        assert!(stderr.contains("No changes detected"), "{stderr}");
+    }
+}
+
+#[test]
+fn e2e_review_file_is_optional() {
+    let repo = setup_repo();
+    let (code, _, stderr) = run_semantic_diff(repo.path(), &["HEAD", "HEAD"]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.contains("No changes detected"), "{stderr}");
+}
+
 /// Invalid ref should not panic.
 #[test]
 fn e2e_invalid_ref_no_panic() {

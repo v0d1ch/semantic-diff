@@ -12,7 +12,7 @@ mod signal;
 mod theme;
 mod ui;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::{App, Command, Message};
 use clap::Parser;
 use review::ReviewSource;
@@ -104,6 +104,15 @@ async fn main() -> Result<()> {
 
     // 2b. Parse CLI arguments
     let cli = cli::Cli::parse();
+    if let Some(path) = &cli.review_file {
+        let instructions = std::fs::read_to_string(path)
+            .with_context(|| format!("Could not read review instructions {}", path.display()))?;
+        anyhow::ensure!(
+            !instructions.trim().is_empty(),
+            "Review instructions are empty: {}",
+            path.display()
+        );
+    }
     let git_diff_args = cli.git_diff_args();
     tracing::info!(?git_diff_args, "Git diff args");
 

@@ -203,12 +203,18 @@ are regenerated once.
 
 ### Customizing AI reviews
 
-The app loads only `review.md` from the directory where you start `semantic-diff`.
-It supplies the complete instructions for WHY, WHAT, HOW, and VERDICT. No parent,
-home, Claude, or Codex skill directories are searched, and no review instructions
-are embedded in the binary. The discovered file is read at runtime for all four
-sections. Missing, unreadable, or empty files produce review errors; normal diff
-viewing remains available.
+By default, the app uses `review.md` from the directory where you start
+`semantic-diff`. To select another file, pass `--review-file PATH` before any Git
+arguments, for example `semantic-diff --review-file /path/to/rust-review.md HEAD`.
+Relative paths are resolved from the working directory. An explicitly selected
+file must be readable UTF-8 text and contain non-whitespace content; otherwise,
+startup fails with an error identifying the file, without falling back to `review.md`.
+
+The file supplies the complete instructions for WHY, WHAT, HOW, and VERDICT. No
+parent, home, Claude, or Codex skill directories are searched, and no review
+instructions are embedded in the binary. Instructions are read again when building
+review prompts, so later file errors appear in the review panel. Without the flag,
+a missing or invalid local `review.md` does not prevent normal diff viewing.
 
 Keep the section selectors and response formats documented in `review.md`, including
 HOW's exact `SKIP` response. Rust code attaches the section selector and group/diff
