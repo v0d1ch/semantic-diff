@@ -33,6 +33,7 @@
           # Make the Rust toolchain available in the shell.
           nativeBuildInputs = [
             rustToolchain
+            pkgs.bash
           ];
 
           # Supporting tools for Rust and Go development.

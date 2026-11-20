@@ -2,3 +2,4 @@ target/
 ai-plans/
 .claude/logs/
 .envrc
+.direnv/
