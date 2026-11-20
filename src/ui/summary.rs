@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::review::ReviewSource;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -108,10 +109,14 @@ pub fn render_summary(app: &App, frame: &mut Frame, area: Rect) {
     }
 
     // Right-align the shortcut hint
-    spans.push(Span::styled(
-        "  a AI review · ? help",
-        Style::default().fg(Color::DarkGray),
-    ));
+    spans.push(Span::styled(" ? help ", Style::default().fg(Color::DarkGray)));
+
+    if let ReviewSource::Skill { path, .. } = &app.review_source {
+        spans.push(Span::styled(
+            format!(" | Review skill: {} ", path.display()),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
 
     let line = Line::from(spans);
     let paragraph = ratatui::widgets::Paragraph::new(line);

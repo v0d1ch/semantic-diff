@@ -161,11 +161,22 @@ pub fn group_content_hash(group: &crate::grouper::SemanticGroup) -> u64 {
 /// Discover a review SKILL by scanning local then global paths.
 /// Returns the first match whose filename contains "review" (case-insensitive).
 pub fn detect_review_skill() -> ReviewSource {
-    // 1. Codebase-level: .claude/skills/
+    // 1. local REVIEW.md file
+    let file_name = "review.md";
+    let review_file_path = PathBuf::from(file_name);
+
+    if review_file_path.is_file() {
+        return ReviewSource::Skill {
+            name: file_name.to_string(),
+            path: review_file_path,
+        };
+    }
+
+    // 2. Codebase-level: .claude/skills/
     if let Some(found) = scan_skills_dir(".claude/skills") {
         return found;
     }
-    // 2. Global: ~/.claude/skills/
+    // 3. Global: ~/.claude/skills/
     if let Some(home) = dirs::home_dir() {
         let global = home.join(".claude").join("skills");
         if let Some(found) = scan_skills_dir(global) {

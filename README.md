@@ -1,6 +1,6 @@
 # semantic-diff cli [FORK]
 
-This repo contains the cli app for semantic-diffing. 
+This repo contains the cli app for semantic-diffing packed with new features I personally would like to have when reviewing some code.
 
 List of features I plan to add to semantic-diff in no particular order
 
@@ -14,12 +14,13 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] Make the AI grouping summary threshold configurable
 - [x] Add support to preview mermaid diagrams in .md files (requires mmdc)
 - [x] Add rex terminal support for mermaid diagrams in .md previews 
+- [x] Do not load AI review on start
+- [x] Add support for the local review.md
 - [ ] Add mouse support
 - [ ] Performance, architecture and compilation advancements
 - [ ] Support larger diffs: configurable timeouts, richer hunk context, and better reporting of omitted content or incomplete grouping
 - [ ] Display spinner while AI is reviewing the code
 - [ ] Introduce questions about AI review
-- [x] Do not load AI review on start
 - [ ] Introduce Mermaid support for AI results
 - [ ] Browse the local file in system editor
 - [ ] Post comment using gh tool directly from the cli
