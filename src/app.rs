@@ -42,9 +42,11 @@ pub enum Message {
     Resize(u16, u16),
     RefreshSignal,
     DebouncedRefresh,
-    DiffParsed(DiffData, String), // parsed data + raw diff for cache hashing
+    /// Parsed data, raw diff for cache hashing, and the requested action.
+    DiffParsed(DiffData, String, DiffPurpose),
     GroupingComplete(Vec<SemanticGroup>, u64), // groups + diff_hash for cache saving
-    GroupingFailed(String),
+    GroupingFailed(String, u64),               // error + diff hash to reject stale failures
+    DiffParseFailed(String),
     IncrementalGroupingComplete(
         Vec<SemanticGroup>,
         crate::grouper::DiffDelta,
@@ -55,14 +57,25 @@ pub enum Message {
     /// A mermaid diagram finished rendering — triggers UI refresh.
     MermaidReady,
     ReviewSectionReady(u64, ReviewSection, Result<String, String>),
-    FullContextLoaded {request_id: u64, result: Result<DiffData, String>},
+    FullContextLoaded {
+        request_id: u64,
+        result: Result<DiffData, String>,
+    },
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum DiffPurpose {
+    Refresh,
+    GroupAndReview,
+}
 
 /// Commands returned by update() for the main loop to execute.
 #[allow(dead_code)]
 pub enum Command {
-    SpawnDiffParse { git_diff_args: Vec<String> },
+    SpawnDiffParse {
+        git_diff_args: Vec<String>,
+        purpose: DiffPurpose,
+    },
     SpawnGrouping {
         backend: LlmBackend,
         model: String,
@@ -94,9 +107,8 @@ pub enum Command {
     CancelReview(u64),
     CopyReview(String),
     SpawnFullContextDiff {
-      git_diff_args: Vec<String>,
-      request_id: u64,
-
+        git_diff_args: Vec<String>,
+        request_id: u64,
     },
     Quit,
 }
@@ -125,9 +137,18 @@ pub struct UiState {
 /// An item in the flattened visible list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisibleItem {
-    FileHeader { file_idx: usize },
-    HunkHeader { file_idx: usize, hunk_idx: usize },
-    DiffLine { file_idx: usize, hunk_idx: usize, line_idx: usize },
+    FileHeader {
+        file_idx: usize,
+    },
+    HunkHeader {
+        file_idx: usize,
+        hunk_idx: usize,
+    },
+    DiffLine {
+        file_idx: usize,
+        hunk_idx: usize,
+        line_idx: usize,
+    },
 }
 
 impl VisibleItem {
@@ -136,8 +157,11 @@ impl VisibleItem {
         match *self {
             Self::FileHeader { file_idx } => (file_idx, 0, 0),
             Self::HunkHeader { file_idx, hunk_idx } => (file_idx, hunk_idx + 1, 0),
-            Self::DiffLine { file_idx, hunk_idx, line_idx } =>
-                (file_idx, hunk_idx + 1, line_idx + 1),
+            Self::DiffLine {
+                file_idx,
+                hunk_idx,
+                line_idx,
+            } => (file_idx, hunk_idx + 1, line_idx + 1),
         }
     }
 }
@@ -173,6 +197,7 @@ pub struct App {
     pub(crate) tree_cache: RefCell<crate::ui::file_tree::TreeCache>,
     pub(crate) preview_cache: RefCell<crate::preview::PreviewCache>,
     pub diff_data: DiffData,
+    latest_diff_hash: Option<u64>,
     pub full_context_diff: Option<DiffData>,
     pub full_context_loading: bool,
     pub full_context_request_id: u64,
@@ -225,7 +250,8 @@ pub struct App {
     /// Mermaid diagram cache (only used when image_support == Supported).
     pub mermaid_cache: Option<MermaidCache>,
     pub review_cache: ReviewCache,
-    pub review_handles: std::collections::HashMap<(u64, ReviewSection), tokio::task::JoinHandle<()>>,
+    pub review_handles:
+        std::collections::HashMap<(u64, ReviewSection), tokio::task::JoinHandle<()>>,
     pub active_review_group: Option<u64>,
     pub review_notice: Option<String>,
     pub review_scroll: usize,
@@ -236,7 +262,11 @@ pub struct App {
 
 impl App {
     /// Create a new App with parsed diff data, user config, and git diff arguments.
-    pub fn new(diff_data: DiffData, config: &crate::config::Config, git_diff_args: Vec<String>) -> Self {
+    pub fn new(
+        diff_data: DiffData,
+        config: &crate::config::Config,
+        git_diff_args: Vec<String>,
+    ) -> Self {
         let theme = Theme::from_mode(config.theme_mode);
         let llm_backend = config.detect_backend();
         let highlight_cache = HighlightCache::new(&diff_data, theme.syntect_theme);
@@ -252,6 +282,7 @@ impl App {
             tree_cache: RefCell::new(crate::ui::file_tree::TreeCache::default()),
             preview_cache: RefCell::new(crate::preview::PreviewCache::default()),
             diff_data,
+            latest_diff_hash: None,
             full_context_diff: None,
             full_context_loading: false,
             full_context_request_id: 0,
@@ -298,7 +329,7 @@ impl App {
             review_scroll: 0,
             review_source: crate::review::detect_review_skill(),
             sidebar_visible: true,
-            max_summary_bytes: config.max_summary_bytes
+            max_summary_bytes: config.max_summary_bytes,
         }
     }
 
@@ -349,124 +380,35 @@ impl App {
                 self.debounce_handle = None;
                 Some(Command::SpawnDiffParse {
                     git_diff_args: self.git_diff_args.clone(),
+                    purpose: DiffPurpose::Refresh,
                 })
             }
-            Message::DiffParsed(new_data, raw_diff) => {
-                self.apply_new_diff_data(new_data);
+            Message::DiffParsed(new_data, raw_diff, purpose) => {
                 let hash = crate::cache::diff_hash(&raw_diff);
-                let current_head = crate::cache::get_head_commit();
-
-                // Check exact diff hash cache first (handles identical re-triggers)
-                if let Some(cached) = crate::cache::load(hash, &self.ai_cache_key()) {
-                    let mut groups = cached;
-                    crate::grouper::normalize_hunk_indices(&mut groups, &self.diff_data);
-                    self.semantic_groups = Some(groups);
-                    self.grouping_status = GroupingStatus::Done;
-                    self.grouping_handle = None;
-                    // Update incremental state
-                    if let Some(ref head) = current_head {
-                        self.previous_head = Some(head.clone());
-                    }
-                    self.previous_file_hashes =
-                        crate::grouper::compute_all_file_hashes(&self.diff_data);
-                    return None;
-                }
-
-                // Try incremental path: same HEAD + have previous groups
-                let can_incremental = current_head.is_some()
-                    && self.previous_head.as_ref() == current_head.as_ref()
-                    && self.semantic_groups.is_some()
-                    && !self.previous_file_hashes.is_empty();
-
-                if can_incremental {
-                    let new_hashes = crate::grouper::compute_all_file_hashes(&self.diff_data);
-                    let delta =
-                        crate::grouper::compute_diff_delta(&new_hashes, &self.previous_file_hashes);
-
-                    if !delta.has_changes() {
-                        // Nothing changed — keep existing groups
-                        self.grouping_status = GroupingStatus::Done;
-                        return None;
-                    }
-
-                    if delta.is_only_removals() {
-                        // Only files removed — prune groups locally, no LLM needed
-                        let mut groups = self.semantic_groups.clone().unwrap_or_default();
-                        crate::grouper::remove_files_from_groups(&mut groups, &delta.removed_files);
-                        crate::grouper::normalize_hunk_indices(&mut groups, &self.diff_data);
-                        self.semantic_groups = Some(groups);
-                        self.grouping_status = GroupingStatus::Done;
-                        self.previous_file_hashes = new_hashes.clone();
-                        // Save updated cache
-                        if let Some(ref head) = current_head {
-                            crate::cache::save_with_state(
-                                hash,
-                                self.semantic_groups.as_ref().unwrap(),
-                                Some(head),
-                                &new_hashes,
-                                &self.ai_cache_key(),
-                            );
-                        }
-                        return None;
-                    }
-
-                    // New or modified files — spawn incremental LLM grouping
-                    if let Some(backend) = self.llm_backend {
-                        if let Some(handle) = self.grouping_handle.take() {
-                            handle.abort();
-                        }
-                        self.grouping_status = GroupingStatus::Loading;
-                        let existing = self.semantic_groups.as_ref().unwrap();
-                        let summaries = crate::grouper::incremental_hunk_summaries(
-                            &self.diff_data,
-                            &delta,
-                            existing,
-                            self.max_summary_bytes
-                        );
-                        tracing::info!(
-                            new = delta.new_files.len(),
-                            modified = delta.modified_files.len(),
-                            removed = delta.removed_files.len(),
-                            unchanged = delta.unchanged_files.len(),
-                            "Incremental grouping"
-                        );
-                        return Some(Command::SpawnIncrementalGrouping {
-                            backend,
-                            model: self.llm_model.clone(),
-                            reasoning_effort: self.llm_reasoning_effort.clone(),
-                            summaries,
-                            diff_hash: hash,
-                            head_commit: current_head.unwrap(),
-                            file_hashes: new_hashes,
-                            delta,
-                        });
-                    }
-                }
-
-                // Fallback: full re-group
-                if let Some(backend) = self.llm_backend {
-                    // Cancel in-flight grouping (ROB-05)
+                if self.latest_diff_hash != Some(hash) {
+                    // A refresh must not display old groups against new hunks or
+                    // let an older grouping task start reviews of the new diff.
                     if let Some(handle) = self.grouping_handle.take() {
                         handle.abort();
                     }
-                    self.grouping_status = GroupingStatus::Loading;
-                    let summaries = crate::grouper::hunk_summaries(&self.diff_data, self.max_summary_bytes);
-                    let file_hashes = crate::grouper::compute_all_file_hashes(&self.diff_data);
-                    Some(Command::SpawnGrouping {
-                        backend,
-                        model: self.llm_model.clone(),
-                        reasoning_effort: self.llm_reasoning_effort.clone(),
-                        summaries,
-                        diff_hash: hash,
-                        head_commit: current_head,
-                        file_hashes,
-                    })
-                } else {
+                    self.semantic_groups = None;
                     self.grouping_status = GroupingStatus::Idle;
-                    None
+                    self.tree_filter = None;
+                    self.active_review_group = None;
+                    self.review_scroll = 0;
+                    *self.tree_state.borrow_mut() = TreeState::default();
+                }
+                self.latest_diff_hash = Some(hash);
+                self.apply_new_diff_data(new_data);
+                match purpose {
+                    DiffPurpose::Refresh => None,
+                    DiffPurpose::GroupAndReview => self.request_grouping(&raw_diff),
                 }
             }
             Message::GroupingComplete(groups, diff_hash) => {
+                if self.latest_diff_hash.is_some_and(|hash| hash != diff_hash) {
+                    return None;
+                }
                 let mut groups = groups;
                 crate::grouper::normalize_hunk_indices(&mut groups, &self.diff_data);
                 // Update incremental state for next refresh
@@ -483,22 +425,20 @@ impl App {
                 self.previous_head = current_head;
                 self.previous_file_hashes = file_hashes;
                 self.semantic_groups = Some(groups);
-                self.grouping_status = GroupingStatus::Done;
-                self.grouping_handle = None;
-                // Reset tree state since structure changed from flat→grouped
-                let mut ts = self.tree_state.borrow_mut();
-                *ts = TreeState::default();
-                ts.select_first();
-                drop(ts);
-                // Clear any stale tree filter from the flat view
-                self.tree_filter = None;
-                // Spawn reviews for all groups in parallel
-                self.spawn_all_reviews()
+                self.finish_grouping()
             }
-            Message::IncrementalGroupingComplete(new_assignments, delta, file_hashes, diff_hash, head_commit) => {
+            Message::IncrementalGroupingComplete(
+                new_assignments,
+                delta,
+                file_hashes,
+                diff_hash,
+                head_commit,
+            ) => {
+                if self.latest_diff_hash.is_some_and(|hash| hash != diff_hash) {
+                    return None;
+                }
                 let existing = self.semantic_groups.as_ref().cloned().unwrap_or_default();
-                let mut merged =
-                    crate::grouper::merge_groups(&existing, &new_assignments, &delta);
+                let mut merged = crate::grouper::merge_groups(&existing, &new_assignments, &delta);
                 crate::grouper::normalize_hunk_indices(&mut merged, &self.diff_data);
                 // Save merged groups to cache with incremental state
                 crate::cache::save_with_state(
@@ -509,24 +449,22 @@ impl App {
                     &self.ai_cache_key(),
                 );
                 self.semantic_groups = Some(merged);
-                self.grouping_status = GroupingStatus::Done;
-                self.grouping_handle = None;
                 self.previous_file_hashes = file_hashes;
                 self.previous_head = Some(head_commit);
-                // Reset tree state since structure changed
-                let mut ts = self.tree_state.borrow_mut();
-                *ts = TreeState::default();
-                ts.select_first();
-                drop(ts);
-                self.tree_filter = None;
-                // Spawn reviews for all groups in parallel
-                self.spawn_all_reviews()
+                self.finish_grouping()
             }
-            Message::GroupingFailed(err) => {
+            Message::GroupingFailed(err, diff_hash) => {
+                if self.latest_diff_hash.is_some_and(|hash| hash != diff_hash) {
+                    return None;
+                }
                 tracing::warn!("Grouping failed: {}", err);
                 self.grouping_status = GroupingStatus::Error(err);
                 self.grouping_handle = None;
                 None // Continue showing ungrouped — graceful degradation (ROB-06)
+            }
+            Message::DiffParseFailed(error) => {
+                self.review_notice = Some(format!("Could not refresh diff: {error}"));
+                None
             }
             Message::MermaidReady => None, // just triggers UI refresh
             Message::ReviewSectionReady(hash, section, result) => {
@@ -537,7 +475,9 @@ impl App {
                             if section == ReviewSection::How && content.trim() == "SKIP" {
                                 review.sections.insert(section, SectionState::Skipped);
                             } else {
-                                review.sections.insert(section, SectionState::Ready(content));
+                                review
+                                    .sections
+                                    .insert(section, SectionState::Ready(content));
                             }
                         }
                         Err(msg) => {
@@ -553,24 +493,21 @@ impl App {
                 None
             }
 
-            Message::FullContextLoaded {request_id, result} => {
+            Message::FullContextLoaded { request_id, result } => {
                 if request_id != self.full_context_request_id {
-                       return None;
+                    return None;
                 }
                 self.full_context_loading = false;
-            
+
                 match result {
                     Ok(data) => {
-                        tracing::debug!(
-                            files = data.files.len(),
-                            "Full-file context loaded"
-                        );
-            
+                        tracing::debug!(files = data.files.len(), "Full-file context loaded");
+
                         // Capture now so navigation during loading is preserved too.
                         let anchor = self.capture_diff_anchor();
                         self.full_context_diff = Some(data);
                         self.invalidate_derived_data();
-                        
+
                         if self.ui_state.full_file_context {
                             self.restore_diff_anchor(anchor);
                         }
@@ -581,7 +518,7 @@ impl App {
                         self.ui_state.full_file_context = false;
                     }
                 }
-            
+
                 None
             }
         }
@@ -672,7 +609,10 @@ impl App {
             VisibleItem::HunkHeader { file_idx, .. } => *file_idx,
             VisibleItem::DiffLine { file_idx, .. } => *file_idx,
         };
-        self.displayed_diff().files.get(fi).map(|f| f.target_file.clone())
+        self.displayed_diff()
+            .files
+            .get(fi)
+            .map(|f| f.target_file.clone())
     }
 
     /// Handle a key press event, branching on input mode.
@@ -731,10 +671,10 @@ impl App {
             }
             KeyCode::Tab => {
                 if self.sidebar_visible {
-                  self.focused_panel = match self.focused_panel {
-                      FocusedPanel::FileTree => FocusedPanel::DiffView,
-                      FocusedPanel::DiffView => FocusedPanel::FileTree,
-                  };
+                    self.focused_panel = match self.focused_panel {
+                        FocusedPanel::FileTree => FocusedPanel::DiffView,
+                        FocusedPanel::DiffView => FocusedPanel::FileTree,
+                    };
                 }
                 return None;
             }
@@ -777,12 +717,24 @@ impl App {
             }
             KeyCode::Char('b') => {
                 self.sidebar_visible = !self.sidebar_visible;
-            
+
                 if !self.sidebar_visible {
                     self.focused_panel = FocusedPanel::DiffView;
                 }
-            
+
                 return None;
+            }
+
+            KeyCode::Char('a') => {
+                if self.llm_backend.is_none() {
+                    self.review_notice =
+                        Some("No AI CLI available; check your AI configuration.".into());
+                    return None;
+                }
+                return Some(Command::SpawnDiffParse {
+                    git_diff_args: self.git_diff_args.clone(),
+                    purpose: DiffPurpose::GroupAndReview,
+                });
             }
             _ => {}
         }
@@ -846,9 +798,7 @@ impl App {
             Some(TreeNodeId::Group(gi)) => {
                 self.select_tree_group(*gi);
                 // Set this group as active for the review pane display.
-                // Reviews are pre-spawned for all groups when grouping completes,
-                // so by the time the user navigates here the review is likely
-                // already cached or in-flight.
+                // Navigation only displays reviews. The explicit AI action starts them.
                 if let Some(groups) = &self.semantic_groups {
                     if let Some(group) = groups.get(*gi) {
                         let hash = self.review_content_hash(group);
@@ -860,13 +810,11 @@ impl App {
 
                         // If review isn't in memory yet, try disk cache
                         if self.review_cache.get(&hash).is_none() {
-                            if let Some(cached) = crate::review::load_review_from_disk(hash, &self.review_source) {
+                            if let Some(cached) =
+                                crate::review::load_review_from_disk(hash, &self.review_source)
+                            {
                                 self.review_cache.insert(cached);
                             }
-                        }
-                        // If still not cached (and not in-flight), spawn on demand as fallback
-                        if self.review_cache.get(&hash).is_none() {
-                            return self.spawn_all_reviews();
                         }
                     }
                 }
@@ -886,8 +834,18 @@ impl App {
     }
 
     pub fn review_content_hash(&self, group: &SemanticGroup) -> u64 {
-        self.ai_cache_key()
-            .hash_content(crate::review::group_content_hash(group))
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        "review-content-v2".hash(&mut hasher);
+        crate::review::group_content_hash(group).hash(&mut hasher);
+        group.description.hash(&mut hasher);
+        let hashes = crate::grouper::compute_all_file_hashes(&self.diff_data);
+        let mut changes = group.changes();
+        changes.sort_by(|a, b| a.file.cmp(&b.file));
+        for change in changes {
+            hashes.get(&change.file).hash(&mut hasher);
+        }
+        self.ai_cache_key().hash_content(hasher.finish())
     }
 
     /// Spawn reviews for ALL groups. Checks disk cache first, only spawns LLM
@@ -901,33 +859,32 @@ impl App {
         for group in &groups {
             let hash = self.review_content_hash(group);
 
-            // Already in memory cache?
-            if self.review_cache.get(&hash).is_some() {
-                continue;
+            if self.review_cache.get(&hash).is_none() {
+                let review = crate::review::load_review_from_disk(hash, &self.review_source)
+                    .unwrap_or_else(|| GroupReview {
+                        content_hash: hash,
+                        sections: HashMap::new(),
+                        source: self.review_source.clone(),
+                    });
+                self.review_cache.insert(review);
             }
-
-            // Check disk cache
-            if let Some(cached) = crate::review::load_review_from_disk(hash, &self.review_source) {
-                self.review_cache.insert(cached);
-                continue;
-            }
-
-            // Cache miss — prepare LLM calls for this group
-            let mut sections_map = std::collections::HashMap::new();
-            for s in ReviewSection::all() {
-                sections_map.insert(s, SectionState::Loading);
-            }
-            self.review_cache.insert(GroupReview {
-                content_hash: hash,
-                sections: sections_map,
-                source: self.review_source.clone(),
-            });
 
             let model = self.llm_model.clone();
             let review_source = self.review_source.clone();
             for &section in &ReviewSection::all() {
+                let review = self.review_cache.get_mut(&hash).unwrap();
+                match review.sections.get(&section) {
+                    Some(
+                        SectionState::Ready(_) | SectionState::Skipped | SectionState::Loading,
+                    ) => continue,
+                    Some(SectionState::Error(_)) | None => {}
+                }
+                review.sections.insert(section, SectionState::Loading);
                 let prompt = crate::review::llm::build_review_prompt(
-                    section, group, &self.diff_data, &review_source,
+                    section,
+                    group,
+                    &self.diff_data,
+                    &review_source,
                 );
                 all_cmds.push(Command::SpawnReviewSection {
                     backend,
@@ -949,14 +906,14 @@ impl App {
 
     fn full_context_git_args(&self) -> Vec<String> {
         let mut args = self.git_diff_args.clone();
-    
+
         let insert_at = args
             .iter()
             .position(|arg| arg == "--")
             .unwrap_or(args.len());
-    
+
         args.insert(insert_at, String::from("--unified=999999"));
-    
+
         args
     }
 
@@ -1040,13 +997,13 @@ impl App {
                 } else {
                     None
                 };
-            
+
                 self.invalidate_full_context();
-            
+
                 if enable {
                     self.ui_state.full_file_context = true;
                     self.full_context_loading = true;
-            
+
                     Some(Command::SpawnFullContextDiff {
                         request_id: self.full_context_request_id,
                         git_diff_args: self.full_context_git_args(),
@@ -1190,10 +1147,7 @@ impl App {
                     // Resolve to actual diff path
                     if let Some(diff_path) = self.resolve_diff_path(&change.file) {
                         let hunk_set: HashSet<usize> = change.hunks.iter().copied().collect();
-                        filter
-                            .entry(diff_path)
-                            .or_default()
-                            .extend(hunk_set.iter());
+                        filter.entry(diff_path).or_default().extend(hunk_set.iter());
                     }
                 }
                 return filter;
@@ -1299,15 +1253,17 @@ impl App {
             }
             KeyCode::Enter => {
                 self.input_mode = InputMode::Normal;
-                self.diff_search = (!self.search_query.is_empty())
-                    .then(|| self.search_query.clone());
+                self.diff_search =
+                    (!self.search_query.is_empty()).then(|| self.search_query.clone());
                 self.jump_to_diff_match(true, true);
             }
             KeyCode::Backspace => {
                 self.search_query.pop();
             }
             KeyCode::Char(c)
-                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 self.search_query.push(c);
             }
@@ -1332,11 +1288,9 @@ impl App {
                 file_idx,
                 hunk_idx,
                 line_idx,
-            } => {
-                self.displayed_diff().files[*file_idx].hunks[*hunk_idx].lines[*line_idx]
-                    .content
-                    .contains(pattern)
-            }
+            } => self.displayed_diff().files[*file_idx].hunks[*hunk_idx].lines[*line_idx]
+                .content
+                .contains(pattern),
             _ => false,
         }
     }
@@ -1344,14 +1298,19 @@ impl App {
     /// Count matching lines in the current file/group scope, including collapsed lines.
     pub fn diff_search_status(&self) -> Option<String> {
         let pattern = self.diff_search_pattern()?;
-        let current = self.visible_items().get(self.ui_state.selected_index).copied();
+        let current = self
+            .visible_items()
+            .get(self.ui_state.selected_index)
+            .copied();
         let matches = self.diff_matches(pattern);
         if matches.is_empty() {
             return Some("No matches".to_owned());
         }
-        let position = current
-            .as_ref()
-            .and_then(|current| matches.binary_search_by_key(&current.position(), VisibleItem::position).ok());
+        let position = current.as_ref().and_then(|current| {
+            matches
+                .binary_search_by_key(&current.position(), VisibleItem::position)
+                .ok()
+        });
         Some(match position {
             Some(index) => format!("{}/{} matching lines", index + 1, matches.len()),
             None => format!("{} matching lines", matches.len()),
@@ -1366,8 +1325,13 @@ impl App {
                 return Rc::clone(&cache.matches);
             }
         }
-        let matches = Rc::new(items.iter().copied()
-            .filter(|item| self.is_diff_match(item, pattern)).collect());
+        let matches = Rc::new(
+            items
+                .iter()
+                .copied()
+                .filter(|item| self.is_diff_match(item, pattern))
+                .collect(),
+        );
         *cache = Some(SearchCache {
             items,
             query: pattern.to_owned(),
@@ -1380,24 +1344,39 @@ impl App {
         let Some(pattern) = self.diff_search.as_deref() else {
             return;
         };
-        let current = self.visible_items().get(self.ui_state.selected_index).copied();
+        let current = self
+            .visible_items()
+            .get(self.ui_state.selected_index)
+            .copied();
         let matches = self.diff_matches(pattern);
         if matches.is_empty() {
             return;
         }
         let position = current.map(|item| item.position()).unwrap_or((0, 0, 0));
         let index = if forward {
-            matches.partition_point(|item| item.position() < position
-                || (!include_current && item.position() == position)) % matches.len()
+            matches.partition_point(|item| {
+                item.position() < position || (!include_current && item.position() == position)
+            }) % matches.len()
         } else {
-            (matches.partition_point(|item| item.position() < position
-                || (include_current && item.position() == position)) + matches.len() - 1) % matches.len()
+            (matches.partition_point(|item| {
+                item.position() < position || (include_current && item.position() == position)
+            }) + matches.len()
+                - 1)
+                % matches.len()
         };
         let target = matches[index];
-        if let VisibleItem::DiffLine { file_idx, hunk_idx, .. } = target {
+        if let VisibleItem::DiffLine {
+            file_idx, hunk_idx, ..
+        } = target
+        {
             self.ui_state.collapsed.remove(&NodeId::File(file_idx));
-            self.ui_state.collapsed.remove(&NodeId::Hunk(file_idx, hunk_idx));
-            if let Ok(index) = self.visible_items().binary_search_by_key(&target.position(), VisibleItem::position) {
+            self.ui_state
+                .collapsed
+                .remove(&NodeId::Hunk(file_idx, hunk_idx));
+            if let Ok(index) = self
+                .visible_items()
+                .binary_search_by_key(&target.position(), VisibleItem::position)
+            {
                 self.ui_state.selected_index = index;
                 self.adjust_scroll();
             }
@@ -1442,7 +1421,9 @@ impl App {
         let new_idx = if delta > 0 {
             (self.ui_state.selected_index + delta as usize).min(max_idx)
         } else {
-            self.ui_state.selected_index.saturating_sub((-delta) as usize)
+            self.ui_state
+                .selected_index
+                .saturating_sub((-delta) as usize)
         };
         self.ui_state.selected_index = new_idx;
         self.adjust_scroll();
@@ -1587,8 +1568,16 @@ impl App {
 
     fn cached_diff_items(&self, respect_collapse: bool) -> Rc<Vec<VisibleItem>> {
         let data = self.displayed_diff();
-        let identity = (data.files.as_ptr() as usize, data.files.len(), self.full_context_active());
-        let cache = if respect_collapse { &self.visible_cache } else { &self.expanded_cache };
+        let identity = (
+            data.files.as_ptr() as usize,
+            data.files.len(),
+            self.full_context_active(),
+        );
+        let cache = if respect_collapse {
+            &self.visible_cache
+        } else {
+            &self.expanded_cache
+        };
         let mut cache = cache.borrow_mut();
         let valid = cache.identity == identity
             && cache.filter == self.active_filter
@@ -1604,17 +1593,18 @@ impl App {
             identity,
             filter: self.active_filter.clone(),
             tree_filter: self.tree_filter.clone(),
-            collapsed: if respect_collapse { self.ui_state.collapsed.clone() } else { HashSet::new() },
+            collapsed: if respect_collapse {
+                self.ui_state.collapsed.clone()
+            } else {
+                HashSet::new()
+            },
             items: Some(Rc::clone(&items)),
         };
         items
     }
 
     fn diff_items(&self, respect_collapse: bool) -> Vec<VisibleItem> {
-        let filter_lower = self
-            .active_filter
-            .as_ref()
-            .map(|f| f.to_lowercase());
+        let filter_lower = self.active_filter.as_ref().map(|f| f.to_lowercase());
 
         let mut items = Vec::new();
         for (fi, file) in self.displayed_diff().files.iter().enumerate() {
@@ -1641,7 +1631,7 @@ impl App {
                 for (hi, hunk) in file.hunks.iter().enumerate() {
                     // If hunk filter is active and this hunk isn't in the set, skip it
                     // (empty set = show all hunks for this file)
-                    
+
                     if !self.full_context_active() {
                         if let Some(hunk_set) = allowed_hunks {
                             if !hunk_set.is_empty() && !hunk_set.contains(&hi) {
@@ -1654,7 +1644,8 @@ impl App {
                         file_idx: fi,
                         hunk_idx: hi,
                     });
-                    if !respect_collapse || !self.ui_state.collapsed.contains(&NodeId::Hunk(fi, hi)) {
+                    if !respect_collapse || !self.ui_state.collapsed.contains(&NodeId::Hunk(fi, hi))
+                    {
                         for (li, _line) in hunk.lines.iter().enumerate() {
                             items.push(VisibleItem::DiffLine {
                                 file_idx: fi,
@@ -1674,13 +1665,19 @@ impl App {
         match key.code {
             KeyCode::Char('y') => {
                 let hash = self.active_review_group?;
-                let label = self.semantic_groups.as_ref()
+                let label = self
+                    .semantic_groups
+                    .as_ref()
                     .and_then(|groups| {
-                        groups.iter().find(|group| self.review_content_hash(group) == hash)
+                        groups
+                            .iter()
+                            .find(|group| self.review_content_hash(group) == hash)
                     })
                     .map(|group| group.label.as_str())
                     .unwrap_or("Unknown");
-                let markdown = self.review_cache.get(&hash)
+                let markdown = self
+                    .review_cache
+                    .get(&hash)
                     .and_then(|review| review.markdown(label));
                 if let Some(markdown) = markdown {
                     self.review_notice = Some("Copying review…".into());
@@ -1700,15 +1697,15 @@ impl App {
                 None
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.review_scroll = self.review_scroll.saturating_add(
-                    (self.ui_state.viewport_height / 2) as usize,
-                );
+                self.review_scroll = self
+                    .review_scroll
+                    .saturating_add((self.ui_state.viewport_height / 2) as usize);
                 None
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.review_scroll = self.review_scroll.saturating_sub(
-                    (self.ui_state.viewport_height / 2) as usize,
-                );
+                self.review_scroll = self
+                    .review_scroll
+                    .saturating_sub((self.ui_state.viewport_height / 2) as usize);
                 None
             }
             KeyCode::Char('g') => {
@@ -1737,11 +1734,8 @@ impl App {
                     // Clear caches
                     self.review_cache.remove(&hash);
                     crate::review::delete_review_from_disk(hash);
-                    self.active_review_group = None;
-
-                    // Re-trigger by re-applying current tree selection
-                    let selected = self.tree_state.borrow().selected().to_vec();
-                    return self.apply_tree_selection(&selected);
+                    // Keep this group visible while its replacement review loads.
+                    return self.spawn_all_reviews();
                 }
                 None
             }
@@ -1788,12 +1782,14 @@ impl App {
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let half_page = (self.ui_state.viewport_height / 2) as usize;
-                self.ui_state.preview_scroll = self.ui_state.preview_scroll.saturating_add(half_page);
+                self.ui_state.preview_scroll =
+                    self.ui_state.preview_scroll.saturating_add(half_page);
                 None
             }
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let half_page = (self.ui_state.viewport_height / 2) as usize;
-                self.ui_state.preview_scroll = self.ui_state.preview_scroll.saturating_sub(half_page);
+                self.ui_state.preview_scroll =
+                    self.ui_state.preview_scroll.saturating_sub(half_page);
                 None
             }
             // Collapse/expand still works in preview mode (no-op but don't block)
@@ -1810,14 +1806,13 @@ impl App {
         crate::ui::draw(self, frame)
     }
 
-
     pub fn displayed_diff(&self) -> &DiffData {
         if self.ui_state.full_file_context {
             if let Some(data) = &self.full_context_diff {
                 return data;
             }
         }
-    
+
         &self.diff_data
     }
 
@@ -1832,9 +1827,7 @@ impl App {
         let data = self.displayed_diff();
 
         let (file_idx, source_line, target_line) = match *item {
-            VisibleItem::FileHeader { file_idx } => {
-                (file_idx, None, None)
-            }
+            VisibleItem::FileHeader { file_idx } => (file_idx, None, None),
 
             VisibleItem::HunkHeader { file_idx, hunk_idx } => {
                 let hunk = &data.files[file_idx].hunks[hunk_idx];
@@ -1874,9 +1867,10 @@ impl App {
 
     fn find_diff_anchor(&self, anchor: &DiffAnchor) -> Option<usize> {
         let data = self.displayed_diff();
-        let wanted_file = data.files.iter().position(|file| {
-            file.target_file == anchor.file_path
-        })?;
+        let wanted_file = data
+            .files
+            .iter()
+            .position(|file| file.target_file == anchor.file_path)?;
 
         let items = self.visible_items();
         let mut file_header = None;
@@ -1886,9 +1880,7 @@ impl App {
 
         for (index, item) in items.iter().enumerate() {
             match *item {
-                VisibleItem::FileHeader { file_idx }
-                    if file_idx == wanted_file =>
-                {
+                VisibleItem::FileHeader { file_idx } if file_idx == wanted_file => {
                     file_header = Some(index);
 
                     // No line numbers means we originally selected the file header.
@@ -1911,9 +1903,9 @@ impl App {
                     let distance = if let Some(saved) = anchor.target_line {
                         target_line.map(|number| number.abs_diff(saved))
                     } else {
-                        anchor.source_line.and_then(|saved| {
-                            source_line.map(|number| number.abs_diff(saved))
-                        })
+                        anchor
+                            .source_line
+                            .and_then(|saved| source_line.map(|number| number.abs_diff(saved)))
                     };
 
                     if let Some(distance) = distance {
@@ -1948,9 +1940,7 @@ impl App {
 
         self.ui_state.selected_index = selected;
 
-        let mut remaining_rows = anchor
-            .as_ref()
-            .map_or(0, |saved| saved.screen_row);
+        let mut remaining_rows = anchor.as_ref().map_or(0, |saved| saved.screen_row);
 
         let width = self.ui_state.diff_view_width.get();
         let mut top = selected;
@@ -1984,6 +1974,152 @@ impl App {
         self.full_context_loading = false;
         self.ui_state.full_file_context = false;
     }
+
+    /// All successful grouping paths converge here, including cache hits.
+    fn finish_grouping(&mut self) -> Option<Command> {
+        self.grouping_status = GroupingStatus::Done;
+        self.grouping_handle = None;
+        self.invalidate_derived_data();
+        let mut ts = self.tree_state.borrow_mut();
+        *ts = TreeState::default();
+        ts.select_first();
+        drop(ts);
+        self.tree_filter = None;
+        self.active_review_group = None;
+        self.review_scroll = 0;
+        self.preview_mode = false;
+        let command = self.spawn_all_reviews();
+        if self
+            .semantic_groups
+            .as_ref()
+            .is_some_and(|groups| !groups.is_empty())
+        {
+            self.apply_tree_selection(&[TreeNodeId::Group(0)]);
+        }
+        command
+    }
+
+    fn request_grouping(&mut self, raw_diff: &str) -> Option<Command> {
+        let hash = crate::cache::diff_hash(raw_diff);
+        let current_head = crate::cache::get_head_commit();
+        if let Some(handle) = self.grouping_handle.take() {
+            handle.abort();
+        }
+        if self.diff_data.files.is_empty() {
+            self.semantic_groups = Some(vec![]);
+            self.review_notice = Some("No text changes to review.".into());
+            return self.finish_grouping();
+        }
+
+        // Check exact diff hash cache first (handles identical re-triggers)
+        if let Some(cached) = crate::cache::load(hash, &self.ai_cache_key()) {
+            let mut groups = cached;
+            crate::grouper::normalize_hunk_indices(&mut groups, &self.diff_data);
+            self.semantic_groups = Some(groups);
+            // Update incremental state
+            self.previous_head = current_head;
+            self.previous_file_hashes = crate::grouper::compute_all_file_hashes(&self.diff_data);
+            return self.finish_grouping();
+        }
+
+        // Startup and ordinary refreshes don't load AI state. Restore incremental
+        // state here, only after the user explicitly requests grouping and review.
+        if self.semantic_groups.is_none() || self.previous_head != current_head {
+            if let Some(ref head) = current_head {
+                if let Some((groups, hashes)) =
+                    crate::cache::load_incremental(head, &self.ai_cache_key())
+                {
+                    self.semantic_groups = Some(groups);
+                    self.previous_file_hashes = hashes;
+                    self.previous_head = Some(head.clone());
+                }
+            }
+        }
+
+        // Try incremental path: same HEAD + have previous groups
+        let can_incremental = current_head.is_some()
+            && self.previous_head.as_ref() == current_head.as_ref()
+            && self.semantic_groups.is_some()
+            && !self.previous_file_hashes.is_empty();
+
+        if can_incremental {
+            let new_hashes = crate::grouper::compute_all_file_hashes(&self.diff_data);
+            let delta = crate::grouper::compute_diff_delta(&new_hashes, &self.previous_file_hashes);
+
+            if !delta.has_changes() {
+                // Nothing changed — keep existing groups
+                return self.finish_grouping();
+            }
+
+            if delta.is_only_removals() {
+                // Only files removed — prune groups locally, no LLM needed
+                let mut groups = self.semantic_groups.clone().unwrap_or_default();
+                crate::grouper::remove_files_from_groups(&mut groups, &delta.removed_files);
+                crate::grouper::normalize_hunk_indices(&mut groups, &self.diff_data);
+                self.semantic_groups = Some(groups);
+                self.previous_file_hashes = new_hashes.clone();
+                // Save updated cache
+                if let Some(ref head) = current_head {
+                    crate::cache::save_with_state(
+                        hash,
+                        self.semantic_groups.as_ref().unwrap(),
+                        Some(head),
+                        &new_hashes,
+                        &self.ai_cache_key(),
+                    );
+                }
+                return self.finish_grouping();
+            }
+
+            // New or modified files — spawn incremental LLM grouping
+            if let Some(backend) = self.llm_backend {
+                self.grouping_status = GroupingStatus::Loading;
+                let existing = self.semantic_groups.as_ref().unwrap();
+                let summaries = crate::grouper::incremental_hunk_summaries(
+                    &self.diff_data,
+                    &delta,
+                    existing,
+                    self.max_summary_bytes,
+                );
+                tracing::info!(
+                    new = delta.new_files.len(),
+                    modified = delta.modified_files.len(),
+                    removed = delta.removed_files.len(),
+                    unchanged = delta.unchanged_files.len(),
+                    "Incremental grouping"
+                );
+                return Some(Command::SpawnIncrementalGrouping {
+                    backend,
+                    model: self.llm_model.clone(),
+                    reasoning_effort: self.llm_reasoning_effort.clone(),
+                    summaries,
+                    diff_hash: hash,
+                    head_commit: current_head.unwrap(),
+                    file_hashes: new_hashes,
+                    delta,
+                });
+            }
+        }
+
+        // Fallback: full re-group
+        if let Some(backend) = self.llm_backend {
+            self.grouping_status = GroupingStatus::Loading;
+            let summaries = crate::grouper::hunk_summaries(&self.diff_data, self.max_summary_bytes);
+            let file_hashes = crate::grouper::compute_all_file_hashes(&self.diff_data);
+            Some(Command::SpawnGrouping {
+                backend,
+                model: self.llm_model.clone(),
+                reasoning_effort: self.llm_reasoning_effort.clone(),
+                summaries,
+                diff_hash: hash,
+                head_commit: current_head,
+                file_hashes,
+            })
+        } else {
+            self.grouping_status = GroupingStatus::Idle;
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2016,7 +2152,14 @@ mod view_cache_tests {
         };
         assert_eq!(commands.len(), 4);
         for command in commands {
-            let Command::SpawnReviewSection { backend, model, reasoning_effort, group_content_hash, .. } = command else {
+            let Command::SpawnReviewSection {
+                backend,
+                model,
+                reasoning_effort,
+                group_content_hash,
+                ..
+            } = command
+            else {
                 panic!("expected review section");
             };
             assert_eq!(backend, LlmBackend::Codex);
@@ -2027,7 +2170,10 @@ mod view_cache_tests {
         assert!(app.spawn_all_reviews().is_none());
         app.llm_reasoning_effort = Some("low".into());
         assert_ne!(app.review_content_hash(&group), original_hash);
-        assert!(matches!(app.spawn_all_reviews(), Some(Command::SpawnReviewBatch(_))));
+        assert!(matches!(
+            app.spawn_all_reviews(),
+            Some(Command::SpawnReviewBatch(_))
+        ));
     }
 
     #[test]
@@ -2039,30 +2185,52 @@ mod view_cache_tests {
         app.active_review_group = Some(hash);
         app.review_scroll = 100;
         app.review_cache.insert(GroupReview {
-            content_hash: hash, source: ReviewSource::BuiltIn,
+            content_hash: hash,
+            source: ReviewSource::BuiltIn,
             sections: HashMap::from([
-                (ReviewSection::Why, SectionState::Ready("**All** the text".into())),
+                (
+                    ReviewSection::Why,
+                    SectionState::Ready("**All** the text".into()),
+                ),
                 (ReviewSection::What, SectionState::Loading),
                 (ReviewSection::How, SectionState::Skipped),
                 (ReviewSection::Verdict, SectionState::Error("error".into())),
             ]),
         });
-        let Some(Command::CopyReview(text)) = app.update(Message::KeyPress(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))) else {
+        let Some(Command::CopyReview(text)) = app.update(Message::KeyPress(KeyEvent::new(
+            KeyCode::Char('y'),
+            KeyModifiers::NONE,
+        ))) else {
             panic!("expected copy command");
         };
         assert_eq!(text, "# Review: Copy test\n\n## WHY\n\n**All** the text\n\n## WHAT\n\n*This section is still loading.*\n\n## VERDICT\n\n*This section failed to load.*\n");
         app.update(Message::ReviewCopied(Ok(())));
-        assert_eq!(app.review_notice.as_deref(), Some("Review copied as Markdown"));
+        assert_eq!(
+            app.review_notice.as_deref(),
+            Some("Review copied as Markdown")
+        );
         app.update(Message::ReviewCopied(Err("clipboard unavailable".into())));
-        assert!(app.review_notice.as_deref().unwrap().contains("clipboard unavailable"));
+        assert!(app
+            .review_notice
+            .as_deref()
+            .unwrap()
+            .contains("clipboard unavailable"));
     }
 
     #[test]
     fn copying_without_ready_sections_does_not_replace_clipboard() {
         let mut app = app();
         app.active_review_group = Some(42);
-        assert!(app.update(Message::KeyPress(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))).is_none());
-        assert_eq!(app.review_notice.as_deref(), Some("No review text available to copy yet"));
+        assert!(app
+            .update(Message::KeyPress(KeyEvent::new(
+                KeyCode::Char('y'),
+                KeyModifiers::NONE
+            )))
+            .is_none());
+        assert_eq!(
+            app.review_notice.as_deref(),
+            Some("No review text available to copy yet")
+        );
     }
 
     #[test]
@@ -2076,7 +2244,10 @@ mod view_cache_tests {
             app.jump_to_diff_match(true, false);
             assert!(Rc::ptr_eq(&items, &app.visible_items()));
             assert!(Rc::ptr_eq(&matches, &app.diff_matches("needle")));
-            assert!(app.diff_search_status().unwrap().ends_with("/3 matching lines"));
+            assert!(app
+                .diff_search_status()
+                .unwrap()
+                .ends_with("/3 matching lines"));
         }
         app.ui_state.scroll_offset = 1;
         assert!(Rc::ptr_eq(&items, &app.visible_items()));
@@ -2145,9 +2316,14 @@ mod view_cache_tests {
         app.ui_state.selected_index = 2;
         app.focused_panel = FocusedPanel::FileTree;
         assert!(Rc::ptr_eq(&initial, &build_tree_items(&app, 40)));
-        app.semantic_groups = Some(vec![SemanticGroup::new("Group".into(), "".into(), vec![
-            crate::grouper::GroupedChange { file: "test.rs".into(), hunks: vec![0] },
-        ])]);
+        app.semantic_groups = Some(vec![SemanticGroup::new(
+            "Group".into(),
+            "".into(),
+            vec![crate::grouper::GroupedChange {
+                file: "test.rs".into(),
+                hunks: vec![0],
+            }],
+        )]);
         let grouped = build_tree_items(&app, 40);
         assert!(!Rc::ptr_eq(&initial, &grouped));
         assert_eq!(grouped[0].identifier(), &TreeNodeId::Group(0));

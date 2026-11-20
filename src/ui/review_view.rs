@@ -49,6 +49,8 @@ pub fn render_review_with_diff(app: &App, frame: &mut Frame, area: Rect) {
                     render_section(section, state, &mut lines, &app.theme, area.width);
                 }
             }
+        } else {
+            lines.push(Line::raw(" Press a to group and review the current diff."));
         }
     }
 

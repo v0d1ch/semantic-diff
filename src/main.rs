@@ -18,22 +18,37 @@ use clap::Parser;
 use tokio::sync::mpsc;
 
 /// Spawn review tasks for a SpawnReviewBatch command.
-fn spawn_review_batch(
-    cmd: Command,
-    tx: &mpsc::Sender<Message>,
-    app: &mut App,
-) {
+fn spawn_review_batch(cmd: Command, tx: &mpsc::Sender<Message>, app: &mut App) {
     if let Command::SpawnReviewBatch(cmds) = cmd {
         for cmd in cmds {
-            if let Command::SpawnReviewSection { backend, model, reasoning_effort, section, prompt, group_content_hash } = cmd {
+            if let Command::SpawnReviewSection {
+                backend,
+                model,
+                reasoning_effort,
+                section,
+                prompt,
+                group_content_hash,
+            } = cmd
+            {
                 let tx2 = tx.clone();
                 let handle = tokio::spawn(async move {
                     let result = crate::review::llm::invoke_review_section(
-                        backend, &model, reasoning_effort.as_deref(), &prompt,
-                    ).await;
-                    let _ = tx2.send(Message::ReviewSectionReady(group_content_hash, section, result)).await;
+                        backend,
+                        &model,
+                        reasoning_effort.as_deref(),
+                        &prompt,
+                    )
+                    .await;
+                    let _ = tx2
+                        .send(Message::ReviewSectionReady(
+                            group_content_hash,
+                            section,
+                            result,
+                        ))
+                        .await;
                 });
-                app.review_handles.insert((group_content_hash, section), handle);
+                app.review_handles
+                    .insert((group_content_hash, section), handle);
             }
         }
     }
@@ -106,7 +121,7 @@ async fn main() -> Result<()> {
     let raw_git_diff = String::from_utf8_lossy(&output.stdout);
 
     // 4. Parse diff, including untracked files
-    let (diff_data, raw_diff) = diff::parse_with_untracked(&raw_git_diff);
+    let (diff_data, _raw_diff) = diff::parse_with_untracked(&raw_git_diff);
 
     if diff_data.files.is_empty() && diff_data.binary_files.is_empty() {
         eprintln!("No changes detected");
@@ -128,116 +143,6 @@ async fn main() -> Result<()> {
 
     // 7. Spawn the async event loop (terminal events + SIGUSR1)
     tokio::spawn(event::event_loop(tx.clone()));
-
-    // 7b. Trigger initial semantic grouping — check cache first, then LLM
-    let diff_hash = cache::diff_hash(&raw_diff);
-    if let Some(cached_groups) = cache::load(diff_hash, &app.ai_cache_key()) {
-        let mut cached_groups = cached_groups;
-        grouper::normalize_hunk_indices(&mut cached_groups, &app.diff_data);
-        app.semantic_groups = Some(cached_groups);
-        app.grouping_status = grouper::GroupingStatus::Done;
-        tracing::info!("Using cached grouping");
-        // Initialize incremental state from cache
-        app.previous_head = cache::get_head_commit();
-        app.previous_file_hashes = grouper::compute_all_file_hashes(&app.diff_data);
-        // Spawn reviews for all groups
-        if let Some(cmd) = app.spawn_all_reviews() {
-            spawn_review_batch(cmd, &tx, &mut app);
-        }
-    } else if let Some(backend) = app.llm_backend {
-        // Try incremental cache: same HEAD, previous groups + file hashes stored
-        let current_head = cache::get_head_commit();
-        let mut used_incremental = false;
-
-        if let Some(ref head) = current_head {
-            if let Some((prev_groups, prev_file_hashes)) = cache::load_incremental(head, &app.ai_cache_key()) {
-                let new_hashes = grouper::compute_all_file_hashes(&app.diff_data);
-                let delta = grouper::compute_diff_delta(&new_hashes, &prev_file_hashes);
-
-                if !delta.has_changes() {
-                    // Diff hasn't changed since last save — use cached groups
-                    let mut groups = prev_groups;
-                    grouper::normalize_hunk_indices(&mut groups, &app.diff_data);
-                    app.semantic_groups = Some(groups);
-                    app.grouping_status = grouper::GroupingStatus::Done;
-                    app.previous_head = Some(head.clone());
-                    app.previous_file_hashes = new_hashes;
-                    tracing::info!("Incremental cache: no changes since last save");
-                    if let Some(cmd) = app.spawn_all_reviews() {
-                        spawn_review_batch(cmd, &tx, &mut app);
-                    }
-                    used_incremental = true;
-                } else if delta.is_only_removals() {
-                    // Only files removed — prune locally
-                    let mut groups = prev_groups;
-                    grouper::remove_files_from_groups(&mut groups, &delta.removed_files);
-                    grouper::normalize_hunk_indices(&mut groups, &app.diff_data);
-                    app.semantic_groups = Some(groups);
-                    app.grouping_status = grouper::GroupingStatus::Done;
-                    app.previous_head = Some(head.clone());
-                    app.previous_file_hashes = new_hashes.clone();
-                    cache::save_with_state(diff_hash, app.semantic_groups.as_ref().unwrap(), Some(head), &new_hashes, &app.ai_cache_key());
-                    tracing::info!("Incremental cache: pruned removed files");
-                    if let Some(cmd) = app.spawn_all_reviews() {
-                        spawn_review_batch(cmd, &tx, &mut app);
-                    }
-                    used_incremental = true;
-                } else {
-                    // New/modified files — spawn incremental grouping
-                    let summaries = grouper::incremental_hunk_summaries(&app.diff_data, &delta, &prev_groups, app.max_summary_bytes);
-                    let model = app.llm_model.clone();
-                    let reasoning_effort = app.llm_reasoning_effort.clone();
-                    let head_clone = head.clone();
-                    let tx2 = tx.clone();
-                    tracing::info!(
-                        new = delta.new_files.len(),
-                        modified = delta.modified_files.len(),
-                        removed = delta.removed_files.len(),
-                        "Incremental grouping on startup"
-                    );
-                    // Store previous groups so IncrementalGroupingComplete can merge
-                    app.semantic_groups = Some(prev_groups);
-                    app.previous_head = Some(head.clone());
-                    app.previous_file_hashes = prev_file_hashes;
-                    let handle = tokio::spawn(async move {
-                        match grouper::llm::request_incremental_grouping(backend, &model, reasoning_effort.as_deref(), &summaries).await {
-                            Ok(groups) => {
-                                let _ = tx2.send(Message::IncrementalGroupingComplete(
-                                    groups, delta, new_hashes, diff_hash, head_clone,
-                                )).await;
-                            }
-                            Err(e) => {
-                                let _ = tx2.send(Message::GroupingFailed(e.to_string())).await;
-                            }
-                        }
-                    });
-                    app.grouping_handle = Some(handle);
-                    app.grouping_status = grouper::GroupingStatus::Loading;
-                    used_incremental = true;
-                }
-            }
-        }
-
-        if !used_incremental {
-            // Full re-group: no incremental state available
-            let summaries = grouper::hunk_summaries(&app.diff_data, app.max_summary_bytes);
-            let model = app.llm_model.clone();
-            let reasoning_effort = app.llm_reasoning_effort.clone();
-            let tx2 = tx.clone();
-            let handle = tokio::spawn(async move {
-                match grouper::llm::request_grouping_with_timeout(backend, &model, reasoning_effort.as_deref(), &summaries).await {
-                    Ok(groups) => {
-                        let _ = tx2.send(Message::GroupingComplete(groups, diff_hash)).await;
-                    }
-                    Err(e) => {
-                        let _ = tx2.send(Message::GroupingFailed(e.to_string())).await;
-                    }
-                }
-            });
-            app.grouping_handle = Some(handle);
-            app.grouping_status = grouper::GroupingStatus::Loading;
-        }
-    }
 
     // 8. Init terminal and enter main loop
     let mut terminal = ratatui::init();
@@ -266,7 +171,6 @@ async fn main() -> Result<()> {
                 })?;
             }
         }
-
         had_images_last_frame = has_images;
 
         if let Some(msg) = rx.recv().await {
@@ -275,27 +179,50 @@ async fn main() -> Result<()> {
                     Command::CopyReview(markdown) => {
                         let tx2 = tx.clone();
                         tokio::spawn(async move {
-                            let result = review::clipboard::copy_markdown(&markdown).await
+                            let result = review::clipboard::copy_markdown(&markdown)
+                                .await
                                 .map_err(|error| error.to_string());
                             let _ = tx2.send(Message::ReviewCopied(result)).await;
                         });
                     }
-                    Command::SpawnDiffParse { git_diff_args } => {
+                    Command::SpawnDiffParse {
+                        git_diff_args,
+                        purpose,
+                    } => {
                         let tx2 = tx.clone();
                         tokio::spawn(async move {
                             let output = tokio::process::Command::new("git")
                                 .args(&git_diff_args)
                                 .output()
                                 .await;
-                            if let Ok(output) = output {
-                                let raw_git = String::from_utf8_lossy(&output.stdout).to_string();
-                                let untracked = crate::diff::untracked::discover_untracked_files_async().await;
-                                let (data, combined) = crate::diff::parse_with_untracked_paths(&raw_git, &untracked);
-                                let _ = tx2.send(Message::DiffParsed(data, combined)).await;
-                            }
+                            let message = match output {
+                                Ok(output) if output.status.success() => {
+                                    let raw_git =
+                                        String::from_utf8_lossy(&output.stdout).to_string();
+                                    let untracked =
+                                        crate::diff::untracked::discover_untracked_files_async()
+                                            .await;
+                                    let (data, combined) = crate::diff::parse_with_untracked_paths(
+                                        &raw_git, &untracked,
+                                    );
+                                    Message::DiffParsed(data, combined, purpose)
+                                }
+                                Ok(output) => Message::DiffParseFailed(
+                                    String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                                ),
+                                Err(error) => Message::DiffParseFailed(error.to_string()),
+                            };
+                            let _ = tx2.send(message).await;
                         });
                     }
-                    Command::SpawnGrouping { backend, model, reasoning_effort, summaries, diff_hash, .. } => {
+                    Command::SpawnGrouping {
+                        backend,
+                        model,
+                        reasoning_effort,
+                        summaries,
+                        diff_hash,
+                        ..
+                    } => {
                         let tx2 = tx.clone();
                         let handle = tokio::spawn(async move {
                             match crate::grouper::llm::request_grouping_with_timeout(
@@ -308,11 +235,14 @@ async fn main() -> Result<()> {
                             {
                                 Ok(groups) => {
                                     // Don't save here — GroupingComplete handler saves with full incremental state
-                                    let _ = tx2.send(Message::GroupingComplete(groups, diff_hash)).await;
+                                    let _ = tx2
+                                        .send(Message::GroupingComplete(groups, diff_hash))
+                                        .await;
                                 }
                                 Err(e) => {
-                                    let _ =
-                                        tx2.send(Message::GroupingFailed(e.to_string())).await;
+                                    let _ = tx2
+                                        .send(Message::GroupingFailed(e.to_string(), diff_hash))
+                                        .await;
                                 }
                             }
                         });
@@ -350,8 +280,9 @@ async fn main() -> Result<()> {
                                         .await;
                                 }
                                 Err(e) => {
-                                    let _ =
-                                        tx2.send(Message::GroupingFailed(e.to_string())).await;
+                                    let _ = tx2
+                                        .send(Message::GroupingFailed(e.to_string(), diff_hash))
+                                        .await;
                                 }
                             }
                         });
@@ -365,7 +296,9 @@ async fn main() -> Result<()> {
                         // This variant exists for type completeness but won't be sent alone in Phase 1
                     }
                     Command::CancelReview(hash) => {
-                        let keys: Vec<_> = app.review_handles.keys()
+                        let keys: Vec<_> = app
+                            .review_handles
+                            .keys()
                             .filter(|(h, _)| *h == hash)
                             .cloned()
                             .collect();
@@ -376,37 +309,40 @@ async fn main() -> Result<()> {
                         }
                     }
 
-                    Command::SpawnFullContextDiff { request_id, git_diff_args } => {
+                    Command::SpawnFullContextDiff {
+                        request_id,
+                        git_diff_args,
+                    } => {
                         let tx2 = tx.clone();
-                    
+
                         tokio::spawn(async move {
                             let output = tokio::process::Command::new("git")
                                 .args(&git_diff_args)
                                 .output()
                                 .await;
-                    
+
                             let result = match output {
                                 Ok(output) if output.status.success() => {
                                     let raw = String::from_utf8_lossy(&output.stdout);
-                    
+
                                     let untracked =
                                         crate::diff::untracked::discover_untracked_files_async()
                                             .await;
-                    
+
                                     let (data, _) =
                                         crate::diff::parse_with_untracked_paths(&raw, &untracked);
-                    
+
                                     Ok(data)
                                 }
-                                Ok(output) => Err(
-                                    String::from_utf8_lossy(&output.stderr)
-                                        .trim()
-                                        .to_owned(),
-                                ),
+                                Ok(output) => {
+                                    Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+                                }
                                 Err(error) => Err(error.to_string()),
                             };
-                    
-                            let _ = tx2.send(Message::FullContextLoaded{request_id, result}).await;
+
+                            let _ = tx2
+                                .send(Message::FullContextLoaded { request_id, result })
+                                .await;
                         });
                     }
 

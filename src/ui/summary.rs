@@ -6,11 +6,9 @@ use ratatui::Frame;
 
 /// Render the summary bar at the bottom of the screen.
 pub fn render_summary(app: &App, frame: &mut Frame, area: Rect) {
-    if app.active_review_group.is_some() {
-        if let Some(notice) = &app.review_notice {
-            frame.render_widget(ratatui::widgets::Paragraph::new(notice.as_str()), area);
-            return;
-        }
+    if let Some(notice) = &app.review_notice {
+        frame.render_widget(ratatui::widgets::Paragraph::new(notice.as_str()), area);
+        return;
     }
     if let Some(pattern) = app.diff_search_pattern() {
         let status = app.diff_search_status().unwrap_or_default();
@@ -111,7 +109,7 @@ pub fn render_summary(app: &App, frame: &mut Frame, area: Rect) {
 
     // Right-align the shortcut hint
     spans.push(Span::styled(
-        "  ? help",
+        "  a AI review · ? help",
         Style::default().fg(Color::DarkGray),
     ));
 

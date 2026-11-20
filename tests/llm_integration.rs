@@ -241,7 +241,7 @@ fn test_grouping_failed_sets_error_status() {
     app.event_tx = Some(tx);
 
     // Simulate a grouping failure
-    app.update(Message::GroupingFailed("parse error: invalid JSON".to_string()));
+    app.update(Message::GroupingFailed("parse error: invalid JSON".to_string(), 0));
 
     assert!(
         matches!(app.grouping_status, GroupingStatus::Error(ref msg) if msg.contains("parse error")),
@@ -301,7 +301,7 @@ fn test_debounced_refresh_carries_git_args() {
     assert!(cmd.is_some(), "DebouncedRefresh should return a command");
 
     match cmd.unwrap() {
-        Command::SpawnDiffParse { git_diff_args } => {
+        Command::SpawnDiffParse { git_diff_args, .. } => {
             assert_eq!(
                 git_diff_args, args,
                 "SpawnDiffParse should carry the App's git_diff_args"
@@ -336,7 +336,7 @@ fn test_different_args_produce_different_commands() {
 
         let cmd = app.update(Message::DebouncedRefresh);
         match cmd.unwrap() {
-            Command::SpawnDiffParse { git_diff_args } => {
+            Command::SpawnDiffParse { git_diff_args, .. } => {
                 assert_eq!(
                     &git_diff_args, args,
                     "Args mismatch for test case: {args:?}"
@@ -365,7 +365,7 @@ fn test_empty_git_args() {
 
     let cmd = app.update(Message::DebouncedRefresh);
     match cmd.unwrap() {
-        Command::SpawnDiffParse { git_diff_args } => {
+        Command::SpawnDiffParse { git_diff_args, .. } => {
             assert!(
                 git_diff_args.is_empty(),
                 "Empty args should produce empty SpawnDiffParse args"
@@ -401,7 +401,7 @@ fn test_rapid_debounced_refresh_stress() {
     for i in 0..50 {
         let cmd = app.update(Message::DebouncedRefresh);
         match cmd.unwrap() {
-            Command::SpawnDiffParse { git_diff_args } => {
+            Command::SpawnDiffParse { git_diff_args, .. } => {
                 assert_eq!(
                     git_diff_args, args,
                     "Iteration {i}: args should be stable across rapid refreshes"
@@ -452,7 +452,7 @@ fn test_git_args_survive_grouping_complete() {
     // DebouncedRefresh should still carry the correct args
     let cmd = app.update(Message::DebouncedRefresh);
     match cmd.unwrap() {
-        Command::SpawnDiffParse { git_diff_args } => {
+        Command::SpawnDiffParse { git_diff_args, .. } => {
             assert_eq!(git_diff_args, args);
         }
         _ => panic!("Expected SpawnDiffParse"),
@@ -480,7 +480,7 @@ fn test_git_args_survive_grouping_failed() {
     app.event_tx = Some(tx);
 
     // Send GroupingFailed
-    app.update(Message::GroupingFailed("timeout".to_string()));
+    app.update(Message::GroupingFailed("timeout".to_string(), 0));
 
     assert_eq!(
         app.git_diff_args, args,
@@ -518,7 +518,7 @@ fn test_large_git_args_vector() {
 
     let cmd = app.update(Message::DebouncedRefresh);
     match cmd.unwrap() {
-        Command::SpawnDiffParse { git_diff_args } => {
+        Command::SpawnDiffParse { git_diff_args, .. } => {
             assert_eq!(git_diff_args.len(), 504);
             assert_eq!(git_diff_args[503], "src/module_499/file_499.rs");
         }

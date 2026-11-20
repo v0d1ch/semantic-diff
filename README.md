@@ -19,7 +19,7 @@ List of features I plan to add to semantic-diff in no particular order
 - [ ] Support larger diffs: configurable timeouts, richer hunk context, and better reporting of omitted content or incomplete grouping
 - [ ] Display spinner while AI is reviewing the code
 - [ ] Introduce questions about AI review
-- [ ] Do not load AI review on start
+- [x] Do not load AI review on start
 - [ ] Introduce Mermaid support for AI results
 - [ ] Browse the local file in system editor
 - [ ] Post comment using gh tool directly from the cli

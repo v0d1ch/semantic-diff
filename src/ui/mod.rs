@@ -82,6 +82,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
             ("Tab", "Switch sidebar/diff focus"),
         ]),
         ("Actions", vec![
+            ("a", "AI: group and review current diff"),
             ("Enter", "Sidebar: select file/group | Diff: toggle collapse"),
             ("p", "Toggle markdown preview (.md files)"),
             ("/", "Sidebar: filter files | Diff: search text"),
