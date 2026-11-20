@@ -1,6 +1,6 @@
 use crate::theme::ThemeMode;
 use clap::Parser;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A terminal diff viewer with AI-powered semantic grouping.
 ///
@@ -28,6 +28,9 @@ pub struct Cli {
     /// Arguments passed through to `git diff` (commits, ranges, --staged, -- paths, etc.)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub git_args: Vec<String>,
+    /// A path to the file containing review instructions for specific project
+    #[arg(long, value_name = "PATH")]
+    pub review_file: Option<PathBuf>,
 }
 
 impl Cli {
@@ -156,6 +159,7 @@ mod tests {
     fn test_no_args_on_default_branch_compares_with_head() {
         let repo = repo_with_default_branch();
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![],
         };
@@ -170,6 +174,7 @@ mod tests {
         let repo = repo_with_default_branch();
         git(repo.path(), &["checkout", "-b", "feature"]);
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![],
         };
@@ -194,6 +199,7 @@ mod tests {
             &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
         );
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![],
         };
@@ -208,6 +214,7 @@ mod tests {
         let repo = repo_with_default_branch();
         git(repo.path(), &["checkout", "--detach"]);
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![],
         };
@@ -221,6 +228,7 @@ mod tests {
     fn test_no_args_outside_repository_falls_back_to_bare_diff() {
         let dir = tempfile::tempdir().unwrap();
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![],
         };
@@ -235,6 +243,7 @@ mod tests {
         let repo = repo_with_default_branch();
         git(repo.path(), &["checkout", "-b", "feature"]);
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--staged".to_owned()],
         };
@@ -247,6 +256,7 @@ mod tests {
     #[test]
     fn test_head_arg() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["HEAD".to_string()],
         };
@@ -259,6 +269,7 @@ mod tests {
     #[test]
     fn test_staged_flag() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--staged".to_string()],
         };
@@ -271,6 +282,7 @@ mod tests {
     #[test]
     fn test_two_dot_range() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["main..feature".to_string()],
         };
@@ -283,6 +295,7 @@ mod tests {
     #[test]
     fn test_three_dot_range() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["main...feature".to_string()],
         };
@@ -301,6 +314,7 @@ mod tests {
     #[test]
     fn test_two_refs() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["main".to_string(), "feature".to_string()],
         };
@@ -320,6 +334,7 @@ mod tests {
     #[test]
     fn test_path_limiter() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["HEAD".to_string(), "--".to_string(), "src/".to_string()],
         };
@@ -340,6 +355,7 @@ mod tests {
     #[test]
     fn test_cached_alias() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--cached".to_string()],
         };
@@ -354,6 +370,7 @@ mod tests {
     #[test]
     fn test_head_tilde_syntax() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["HEAD~3".to_string()],
         };
@@ -366,6 +383,7 @@ mod tests {
     #[test]
     fn test_head_caret_syntax() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["HEAD^".to_string()],
         };
@@ -378,6 +396,7 @@ mod tests {
     #[test]
     fn test_sha_refs() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["abc1234".to_string(), "def5678".to_string()],
         };
@@ -398,6 +417,7 @@ mod tests {
     fn test_full_sha() {
         let sha = "a".repeat(40);
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![sha.clone()],
         };
@@ -410,6 +430,7 @@ mod tests {
     #[test]
     fn test_staged_with_ref() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--staged".to_string(), "HEAD~1".to_string()],
         };
@@ -429,6 +450,7 @@ mod tests {
     #[test]
     fn test_multiple_path_limiters() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![
                 "HEAD".to_string(),
@@ -457,6 +479,7 @@ mod tests {
     #[test]
     fn test_two_dot_range_with_paths() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![
                 "main..feature".to_string(),
@@ -481,6 +504,7 @@ mod tests {
     #[test]
     fn test_three_dot_range_with_paths() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![
                 "origin/main...HEAD".to_string(),
@@ -505,6 +529,7 @@ mod tests {
     #[test]
     fn test_merge_base_flag() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--merge-base".to_string(), "main".to_string()],
         };
@@ -524,6 +549,7 @@ mod tests {
     #[test]
     fn test_no_index_flag() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![
                 "--no-index".to_string(),
@@ -549,6 +575,7 @@ mod tests {
     fn test_many_positional_args_stress() {
         let args: Vec<String> = (0..100).map(|i| format!("path_{i}.rs")).collect();
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: args.clone(),
         };
@@ -565,6 +592,7 @@ mod tests {
     #[test]
     fn test_unicode_path() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![
                 "HEAD".to_string(),
@@ -579,6 +607,7 @@ mod tests {
     #[test]
     fn test_path_with_spaces() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--".to_string(), "path with spaces/file.rs".to_string()],
         };
@@ -589,6 +618,7 @@ mod tests {
     #[test]
     fn test_at_upstream_syntax() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["@{upstream}".to_string()],
         };
@@ -601,6 +631,7 @@ mod tests {
     #[test]
     fn test_stash_ref() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["stash@{0}".to_string()],
         };
@@ -613,6 +644,7 @@ mod tests {
     #[test]
     fn test_remote_tracking_branch() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![
                 "origin/main".to_string(),
@@ -635,6 +667,7 @@ mod tests {
     #[test]
     fn test_tag_ref() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["v1.0.0".to_string(), "v2.0.0".to_string()],
         };
@@ -654,6 +687,7 @@ mod tests {
     #[test]
     fn test_diff_filter_flag_passthrough() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--diff-filter=ACMR".to_string(), "HEAD".to_string()],
         };
@@ -673,6 +707,7 @@ mod tests {
     #[test]
     fn test_stat_flag_passthrough() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--stat".to_string(), "HEAD".to_string()],
         };
@@ -692,6 +727,7 @@ mod tests {
     #[test]
     fn test_name_only_flag_passthrough() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--name-only".to_string()],
         };
@@ -704,6 +740,7 @@ mod tests {
     #[test]
     fn test_combined_flags_and_ranges() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec![
                 "--staged".to_string(),
@@ -732,6 +769,7 @@ mod tests {
     #[test]
     fn test_empty_string_arg() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["".to_string()],
         };
@@ -745,6 +783,7 @@ mod tests {
     #[test]
     fn test_double_dash_only() {
         let cli = Cli {
+            review_file: None,
             theme: None,
             git_args: vec!["--".to_string()],
         };

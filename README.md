@@ -16,7 +16,7 @@ List of features I plan to add to semantic-diff in no particular order
 - [x] Add rex terminal support for mermaid diagrams in .md previews 
 - [x] Do not load AI review on start
 - [x] Add support for the local review.md
-- [ ] Add cli option for review file path
+- [x] Add cli option for review file path
 - [ ] Add mouse support
 - [ ] Performance, architecture and compilation advancements
 - [ ] Support larger diffs: configurable timeouts, richer hunk context, and better reporting of omitted content or incomplete grouping

@@ -15,6 +15,7 @@ mod ui;
 use anyhow::Result;
 use app::{App, Command, Message};
 use clap::Parser;
+use review::ReviewSource;
 use tokio::sync::mpsc;
 
 /// Spawn review tasks for a SpawnReviewBatch command.
@@ -139,6 +140,19 @@ async fn main() -> Result<()> {
     // 6. Set up async channel and app
     let (tx, mut rx) = mpsc::channel::<Message>(32);
     let mut app = App::new(diff_data, &config, git_diff_args);
+
+    if let Some(review_file) = cli.review_file {
+        let name = review_file
+            .file_name()
+            .unwrap_or(review_file.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        app.review_source = ReviewSource::Skill {
+            path: review_file,
+            name,
+        };
+    }
+
     app.event_tx = Some(tx.clone());
 
     // 7. Spawn the async event loop (terminal events + SIGUSR1)

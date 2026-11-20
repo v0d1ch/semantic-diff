@@ -168,7 +168,10 @@ fn review_discovery_only_uses_local_review_md() {
         .unwrap();
     }
     std::fs::remove_file("review.md").unwrap();
-    assert!(matches!(review::detect_review_file(), ReviewSource::Missing));
+    assert!(matches!(
+        review::detect_review_file(),
+        ReviewSource::Missing
+    ));
 }
 
 #[test]
