@@ -125,16 +125,27 @@ semantic-diff
 | Key | Action |
 |-----|--------|
 | `j/k`, `↑/↓` | Navigate up/down |
+| `←/→` | Navigate and collapse/expand nodes in the sidebar |
 | `Enter` | Sidebar: select file/group · Diff: toggle collapse |
 | `Tab` | Switch focus between tree sidebar and diff view |
+| `b` | Show/hide the sidebar |
+| `a` | Refresh the current diff, then request AI grouping and reviews |
 | `p` | Toggle markdown preview (.md files) |
+| `f` | Toggle full-file context in the raw diff panel |
 | `/` | Sidebar: filter filenames · Diff panel: search text |
-| `n/N` | Next/previous matching line in text search; matching file for filename search |
+| `n/N` | Raw diff panel: next/previous matching line in text search; matching file for filename search |
 | `g/G` | Jump to top/bottom |
-| `Ctrl+d/u` | Page down/up |
+| `Ctrl+d/u` | Move half a page down/up in the diff, preview, or review panel |
+| `R` | Force-refresh the selected group's review while the review panel is focused |
+| `y` | Copy the selected group's review as Markdown while the review panel is focused |
+| `,` | Open settings |
+| `d` | Toggle dark/light theme while settings are open |
 | `?` | Show shortcut help |
-| `Escape` | Clear filter / quit |
+| `Escape` | Cancel search input, close settings, or clear active search/filter; otherwise quit |
 | `q` | Quit |
+
+AI grouping and reviews start when you press `a`; they do not run automatically
+at startup. Press any key to close shortcut help.
 
 ### Search in the diff panel
 
